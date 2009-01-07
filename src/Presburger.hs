@@ -262,17 +262,20 @@ norm x n (Op2 op t1 t2)
   where t1' = rm_var x t1
         t2' = rm_var x t2
 
-        k1 = coeff x t1
-        k2 = coeff x t2
+        k1  = coeff x t1
+        k2  = coeff x t2
 
 
--- Is this correct?
 norm x n p@(Op1 op t)
   | k == 0    = (1, Independent p)
-  | k > 0     = scale n k          (VOp1 op) t'
-  | otherwise = scale n (negate k) (VOp1 op) (neg t')
+  | k > 0     = scale n k          (scaled_op k) t'
+  | otherwise = scale n (negate k) (scaled_op (negate k)) (neg t')
   where t' = rm_var x t
         k  = coeff x t
+
+        scaled_op k = case op of
+                        Divides d     -> VOp1 $ Divides    $ d * (n `div` k)
+                        NotDivides d  -> VOp1 $ NotDivides $ d * (n `div` k)
 
 scale :: Integer -> Integer -> (Term -> VarPred) -> Term -> (Integer, VarPred)
 scale n k f t = (k, f ((n `div` k) *. t))
@@ -290,7 +293,7 @@ exists' x t = let (t1,d,as,bs) = analyze x t
             ++ [ body normal (a .- j) t1  | j <- [1 .. d], a <- as ] )
 
         ver_b d t1 bs =
-          Or ( [ body neg_inf (num j) t1  | j <- [1 .. d] ]
+          Or ( [ body neg_inf (num (negate j)) t1  | j <- [1 .. d] ]
             ++ [ body normal (b .+ j) t1  | j <- [1 .. d ], b <- bs ] )
 
 
