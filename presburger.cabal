@@ -1,0 +1,17 @@
+Name:           presburger
+Version:        0.1
+License:        BSD3
+License-file:   LICENSE
+Author:         Iavor S. Diatchki
+Maintainer:     diatchki@galois.com
+Category:       Algorithms
+Synopsis:       Cooper's decision procedure for Presburger arithmetic.
+Description:    Cooper's decision procedure for Presburger arithmetic.
+hs-source-dirs: src
+Build-Depends:  base, containers
+Build-type:     Simple
+Exposed-modules: Presburger
+
+Extensions:
+GHC-options:    -O2 -Wall
+
