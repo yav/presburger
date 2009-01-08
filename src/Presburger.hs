@@ -32,17 +32,43 @@ import qualified Data.IntMap as Map
 import Data.Maybe
 import Data.List
 
+import Text.PrettyPrint.HughesPJ
+
 
 -- | Decide the validity of a formula.
 check              :: Formula -> Bool
-check (F f)          = eval_form (f 0)
-
+check (F f)         = eval_form (f 0)
 
 
 -- Terms ----------------------------------------------------------------------
 
 -- | Integer terms.
 data Term = Term (Map.IntMap Integer) Integer
+
+class PP a where
+  pp :: a -> Doc
+
+instance PP Term where
+  pp (Term m k) | isEmpty vars  = text (show k)
+                | k == 0        = vars
+                | k > 0         = vars <+> char '+' <+> text (show k)
+                | otherwise     = vars <+> char '-' <+> text (show $ abs k)
+    where var (x,n) = sign <+> co <+> text (var_name x)
+            where (sign,co)
+                     | n < 0      = (char '-', text (show (abs n)) <+> char '*')
+                     | n == 1     = (char '+', empty)
+                     | otherwise  = (char '+', text (show n) <+> char '*')
+          first_var (x,n) = text (show n) <+> char '*' <+> text (var_name x)
+
+          vars = case filter ((/= 0) . snd) (Map.toList m) of
+                   []     -> empty
+                   v : vs -> first_var v <+> hsep (map var vs)
+
+
+var_name :: Name -> String
+var_name x = let (a,b) = divMod x 26
+                 rest = if a == 0 then "" else show a
+             in toEnum (97 + b) : rest
 
 -- | Integer constant.
 num                :: Integer -> Term
@@ -168,6 +194,7 @@ t1 ./=. t2          = lift $ Pred $ Op2 NotEqual t1 t2
 
 -- | Check if a term is divisible by an integer constant.
 (|.)               :: Integer -> Term -> Formula
+1 |. _              = true
 k |. t              = lift $ Pred $ Op1 (Divides k) t
 
 -- | Check for the existance of an integer that satisfies the formula.
@@ -204,8 +231,6 @@ constant (Term _ k) = k
 rm_var             :: Name -> Term -> Term
 rm_var x (Term m k) = Term (Map.delete x m) k
 
-
-
 data Op1        = Divides Integer | NotDivides Integer
 data Op2        = LessThen | LessThenEqual | Equal | NotEqual
 
@@ -222,11 +247,36 @@ data Form p     = And  [Form p]
                 | Or   [Form p]
                 | Pred p
 
+instance PP Pred where
+  pp (Op2 op t1 t2) = pp t1 <+> pp op <+> pp t2
+  pp (Op1 op t1)    = pp op <+> pp t1
+
+instance PP Op1 where
+  pp (Divides x)    = text (show x) <+> char '|'
+  pp (NotDivides x) = text (show x) <+> text "/|"
+
+instance PP Op2 where
+  pp LessThen       = text "<"
+  pp LessThenEqual  = text "<="
+  pp Equal          = text "="
+  pp NotEqual       = text "/="
+
+instance PP p => PP (Form p) where
+  pp f = case f of
+    And []  -> text "True"
+    And fs  -> hang (text "AND") 2 (vcat $ map pp fs)
+    Or []   -> text "False"
+    Or fs   -> hang (text "OR") 2 (vcat $ map pp fs)
+    Pred p  -> pp p
+
+instance PP Formula where
+  pp (F f)  = pp (f 0)
+
 
 not' :: Form Pred -> Form Pred
 not' t = case t of
-  And ts -> Or (map not' ts)
-  Or ts  -> And (map not' ts)
+  And ts  -> Or (map not' ts)
+  Or ts   -> And (map not' ts)
   Pred p -> Pred $ case p of
     Op2 op t1 t2 -> case op of
       LessThen      -> Op2 LessThenEqual t2 t1
@@ -273,9 +323,9 @@ norm x n p@(Op1 op t)
   where t' = rm_var x t
         k  = coeff x t
 
-        scaled_op k = case op of
-                        Divides d     -> VOp1 $ Divides    $ d * (n `div` k)
-                        NotDivides d  -> VOp1 $ NotDivides $ d * (n `div` k)
+        scaled_op k' = case op of
+                         Divides d     -> VOp1 $ Divides    $ d * (n `div` k')
+                         NotDivides d  -> VOp1 $ NotDivides $ d * (n `div` k')
 
 scale :: Integer -> Integer -> (Term -> VarPred) -> Term -> (Integer, VarPred)
 scale n k f t = (k, f ((n `div` k) *. t))
@@ -288,19 +338,30 @@ exists' x t = let (t1,d,as,bs) = analyze x t
                     then ver_b d t1 bs
                     else ver_a d t1 as
 
-  where ver_a d t1 as =
-          Or ( [ body pos_inf (num j) t1  | j <- [1 .. d] ]
-            ++ [ body normal (a .- j) t1  | j <- [1 .. d], a <- as ] )
+  where
+  ver_a d t1 as =
+    Or ( [ body x pos_inf (num (negate j)) t1 | j <- [1 .. d] ]
+      ++ [ body x normal  (a .- j) t1         | j <- [1 .. d], a <- as ]
+       )
 
-        ver_b d t1 bs =
-          Or ( [ body neg_inf (num (negate j)) t1  | j <- [1 .. d] ]
-            ++ [ body normal (b .+ j) t1  | j <- [1 .. d ], b <- bs ] )
+  ver_b d t1 bs =
+    Or ( [ body x neg_inf (num j) t1 | j <- [1 .. d] ]
+      ++ [ body x normal (b .+ j) t1 | j <- [1 .. d ], b <- bs ]
+       )
 
 
 
 
-analyze :: Name -> Form Pred -> (Form VarPred, Integer, [Term], [Term])
-analyze x term = (And [t1, Pred $ VOp1 (Divides final_k) (num 0)], d1, as1, bs1)
+analyze :: Name -> Form Pred
+        -> ( Form VarPred     -- Normalized formula
+           , Integer          -- delta
+           , [Term]           -- A set
+           , [Term]           -- B set
+           )
+
+
+analyze x term = ( And [t1, Pred $ VOp1 (Divides final_k) (num 0)]
+                 , d1, as1, bs1)
 
   where (t1, final_k, d1, as1, bs1) = loop term
 
@@ -321,7 +382,7 @@ analyze x term = (And [t1, Pred $ VOp1 (Divides final_k) (num 0)], d1, as1, bs1)
                      NotEqual         -> (1, [t],[t])
 
                    GreaterThen t      -> (1, [], [t])
-                   GreaterThenEqual t -> (1, [], [t .+ 1])
+                   GreaterThenEqual t -> (1, [], [t .- 1])
                    VOp1 op _          -> (d2, [], [])
                      where d2 = case op of
                                   Divides delta    -> delta
@@ -334,12 +395,12 @@ analyze x term = (And [t1, Pred $ VOp1 (Divides final_k) (num 0)], d1, as1, bs1)
 
 -- Special cases for the body of an existential --------------------------------
 
-body :: (VarPred -> Term -> Form Pred) -> Term -> Form VarPred -> Form Pred
-body how x t = case t of
+body :: Name -> (VarPred -> Term -> Form Pred) -> Term -> Form VarPred
+      -> Form Pred
+body v how x t = case t of
   Pred p -> how p x
-  And fs -> And (map (body how x) fs)
-  Or fs  -> Or (map (body how x) fs)
-
+  And fs -> And (map (body v how x) fs)
+  Or fs  -> Or (map (body v how x) fs)
 
 normal :: VarPred -> Term -> Form Pred
 normal p t = Pred $ case p of
@@ -358,7 +419,7 @@ neg_inf p t = case p of
     NotEqual          -> tt
   GreaterThen {}      -> ff
   GreaterThenEqual {} -> ff
-  VOp1 op t1          -> Pred (Op1 op (t .+. t1))
+  VOp1 op t1          -> Pred (Op1 op (t .+. t1)) -- depends on var.
   Independent p1      -> Pred p1
 
 pos_inf :: VarPred -> Term -> Form Pred
@@ -370,10 +431,8 @@ pos_inf p t = case p of
     NotEqual          -> tt
   GreaterThen {}      -> tt
   GreaterThenEqual {} -> tt
-  VOp1 op t1          -> Pred (Op1 op (t .+. t1))
+  VOp1 op t1          -> Pred (Op1 op (t .+. t1)) -- depends on var.
   Independent p1      -> Pred p1
-
-
 
 
 
@@ -404,6 +463,9 @@ eval_op1 op x = case op of
 
 eval_term :: Term -> Integer
 eval_term t = constant t -- should be no varibales
+
+
+--------------------------------------------------------------------------------
 
 
 
