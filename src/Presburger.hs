@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 {-| This module implements Cooper's algorithm for deciding
     first order formulas over integers with addition.
 
@@ -6,141 +8,37 @@ Based on the paper:
   title:  "Theorem Proving in Arithmetic without Multiplication"
   year:   1972
 -}
-module Presburger
-  ( check, check_val
-
-  , Term
-  , num
-  , (.+.), (.+), (+.)
-  , (.-.), (.-), (-.)
-  , (.*), (*.)
-  , neg
-
-  , Formula
-  , false, (\/)
-  , true, (/\)
-  , (==>)
-  , not_
-  , (.<.), (.<=.), (.>.), (.>=.)
-  , (.=.), (./=.)
-  , (|.)
-  , forall, exists
-  , forall_nat, exists_nat
-  ) where
+module Presburger where
 
 import qualified Data.IntMap as Map
 import Data.Maybe
 import Data.List
+import Control.Monad(mplus,guard)
+import Prelude hiding (LT,EQ)
 
 import Text.PrettyPrint.HughesPJ
 import Debug.Trace
 
+check :: Formula -> Bool
+check (F f) = eval_form (f 0)
 
--- | Decide the validity of a formula.
-check              :: Formula -> Bool
-check (F f)         = eval_form Map.empty (f 0)
-
-check_val          :: Formula -> [Env]
-check_val (F f)     = eval_top Map.empty (f 0)
-
-
--- Terms ----------------------------------------------------------------------
-
--- | Integer terms.
-data Term = Term (Map.IntMap Integer) Integer
-
-class PP a where
-  pp :: a -> Doc
-
-instance PP Term where
-  pp (Term m k) | isEmpty vars  = text (show k)
-                | k == 0        = vars
-                | k > 0         = vars <+> char '+' <+> text (show k)
-                | otherwise     = vars <+> char '-' <+> text (show $ abs k)
-    where ppvar (x,n) = sign <+> co <+> text (var_name x)
-            where (sign,co)
-                     | n == -1    = (char '-', empty)
-                     | n < 0      = (char '-', text (show (abs n)) <+> char '*')
-                     | n == 1     = (char '+', empty)
-                     | otherwise  = (char '+', text (show n) <+> char '*')
-          first_var (x,1)  = text (var_name x)
-          first_var (x,-1) = char '-' <> text (var_name x)
-          first_var (x,n)  = text (show n) <+> char '*' <+> text (var_name x)
-
-          vars = case filter ((/= 0) . snd) (Map.toList m) of
-                   []     -> empty
-                   v : vs -> first_var v <+> hsep (map ppvar vs)
-
-
-var_name :: Name -> String
-var_name x = let (a,b) = divMod x 26
-                 rest = if a == 0 then "" else show a
-             in toEnum (97 + b) : rest
-
--- | Integer constant.
-num                :: Integer -> Term
-num x               = Term Map.empty (fromIntegral x)
-
-infixl 6 .+.
--- | The sum of two terms.
-(.+.)              :: Term -> Term -> Term
-Term m1 n1 .+. Term m2 n2 = Term (Map.unionWith (+) m1 m2) (n1 + n2)
-
-infixl 6 .+
--- | Increment a term by an integer.
-(.+)               :: Term -> Integer -> Term
-Term m n .+ k       = Term m (n + k)
-
-infixr 6 +.
--- | Increment a term by an integer.
-(+.)               :: Integer -> Term -> Term
-k +. t              = t .+ k
-
-infixr 7 *.
--- | Multiply a term by an integer constant.
-(*.)               :: Integer -> Term -> Term
-0 *. _              = num 0
-1 *. t              = t
-k *. Term m n       = Term (Map.map (k *) m) (k * n)
-
-infixl 7 .*
--- | Multiply a term by an integer constant.
-(.*)               :: Term -> Integer -> Term
-t .* k              = k *. t
-
--- | Negate a term.
-neg                :: Term -> Term
-neg (Term m n)      = Term (Map.map negate m) (negate n)
-
-infixl 6 .-.
--- | Subtract two terms.
-(.-.)              :: Term -> Term -> Term
-m .-. n             = m .+. neg n
-
-infixl 6 .-
--- | Decrement a term by an integer.
-(.-)               :: Term -> Integer -> Term
-Term m n .- k       = Term m (n - k)
-
-infixl 6 -.
--- | Subtract a term from an integer.
-(-.)               :: Integer -> Term -> Term
-k -. Term m n       = Term (Map.map negate m) (k - n)
-
-
-
--- Formulas --------------------------------------------------------------------
+-- Sugar -----------------------------------------------------------------------
 
 -- | First order formulas.
-newtype Formula     = F (Int -> Form Pred)
+newtype Formula     = F (Int -> Form)
+
+instance PP Formula where
+  pp (F f) = pp (f 0)
+
+instance Show Formula where show = show . pp
 
 -- | False formula.
 false              :: Formula
-false               = lift FF
+false               = lift ff'
 
 -- | True formula.
 true               :: Formula
-true                = lift TT
+true                = not_ false
 
 infixl 3 /\
 -- | The conjunction of two formulas.
@@ -164,12 +62,12 @@ not_ (F p)          = F (\x -> not' (p x))
 infix 4 .<.
 -- | Check if one term is strictly smaller then another.
 (.<.)              :: Term -> Term -> Formula
-t1 .<. t2           = lift $ Pred (Op2 LessThen t1 t2)
+t1 .<. t2           = lift $ Prop $ Pred LT True :> [t1,t2]
 
 infix 4 .<=.
 -- | Check if one term is smaller then, or equal to another.
 (.<=.)             :: Term -> Term -> Formula
-t1 .<=. t2          = lift $ Pred (Op2 LessThenEqual t1 t2)
+t1 .<=. t2          = lift $ Prop $ Pred LEQ True :> [t1,t2]
 
 infix 4 .>.
 -- | Check if one term is strictly greater then another.
@@ -181,45 +79,67 @@ infix 4 .>=.
 (.>=.)             :: Term -> Term -> Formula
 t1 .>=. t2          = t2 .<=. t1
 
-infix 4 .=.
+infix 4 ===
 -- | Check if two terms are equal.
-(.=.)              :: Term -> Term -> Formula
-t1 .=. t2           = lift $ Pred $ Op2 Equal t1 t2
+(===)              :: Term -> Term -> Formula
+t1 === t2           = lift $ Prop $ Pred EQ True :> [t1,t2]
 
-infix 4 ./=.
+infix 4 =/=
 -- | Check if two terms are not equal.
-(./=.)             :: Term -> Term -> Formula
-t1 ./=. t2          = lift $ Pred $ Op2 NotEqual t1 t2
+(=/=)              :: Term -> Term -> Formula
+t1 =/= t2           = lift $ Prop $ Pred EQ False :> [t1,t2]
 
 -- | Check if a term is divisible by an integer constant.
 (|.)               :: Integer -> Term -> Formula
 1 |. _              = true
-k |. t              = lift $ Pred $ Op1 (Divides k) t
+k |. t              = lift $ Prop $ Pred (Divs k) True :> [t]
+
+
+class Exists a where
+  exists' :: [Name] -> (Term -> a) -> Formula
+
+instance Exists Formula where
+  exists' xs f = F (\x -> let F g = f (var x) in exists_many (x:xs) (g (x+1)))
+
+instance Exists t => Exists (Term -> t) where
+  exists' xs f = F $ \x -> let F g = exists' (x:xs) (f (var x)) in g (x+1)
 
 -- | Check for the existance of an integer that satisfies the formula.
-exists             :: (Term -> Formula) -> Formula
-exists f            = F (\x -> let F g = f (Term (Map.singleton x 1) 0)
-                               in exists' x (g (x+1)))
+exists             :: Exists t => (Term -> t) -> Formula
+exists f            = exists' [] f
 
+{-
+-- | Check for the existance of an integer that satisfies the formula.
+exists             :: (Term -> Formula) -> Formula
 -- | Check if all integers satisfy the formula.
-forall             :: (Term -> Formula) -> Formula
+forall             :: ([Term] -> Formula) -> Formula
 forall t            = not_ $ exists $ \x -> not_ (t x)
 
 -- | Check for the existance of a natural number that satisfies the formula.
 exists_nat         :: (Term -> Formula) -> Formula
-exists_nat f        = exists $ \x -> x .>=. num 0 /\ f x
+exists_nat f        = exists $ \x -> x .>=. 0 /\ f x
 
 -- | Check if all natural numbers satisfy the formula.
 forall_nat         :: (Term -> Formula) -> Formula
 forall_nat f        = not_ $ exists_nat $ \x -> not_ (f x)
+-}
+
+lift :: Form -> Formula
+lift p = F (\_ -> p)
+
+-- Terms ----------------------------------------------------------------------
+
+-- | Integer terms.
+data Term = Term (Map.IntMap Integer) Integer
 
 
---------------------------------------------------------------------------------
-
-lift               :: Form Pred -> Formula
-lift p              = F (\_ -> p)
 
 type Name           = Int
+
+var_name           :: Name -> String
+var_name x          = let (a,b) = divMod x 26
+                          rest = if a == 0 then "" else show a
+                      in toEnum (97 + b) : rest
 
 coeff              :: Name -> Term -> Integer
 coeff x (Term m _)  = fromMaybe 0 (Map.lookup x m)
@@ -227,126 +147,177 @@ coeff x (Term m _)  = fromMaybe 0 (Map.lookup x m)
 rm_var             :: Name -> Term -> Term
 rm_var x (Term m k) = Term (Map.delete x m) k
 
-data Op1        = Divides Integer | NotDivides Integer
-data Op2        = LessThen | LessThenEqual | Equal | NotEqual
+var                :: Name -> Term
+var x               = Term (Map.singleton x 1) 0
 
-data Pred       = Op1 !Op1 Term
-                | Op2 !Op2 Term Term
+num                :: Integer -> Term
+num n               = Term Map.empty n
 
-data VarPred    = VOp1 !Op1 Term
-                | VOp2 !Op2 Term
-                | GreaterThen Term
-                | GreaterThenEqual Term
-                | Independent Pred
 
-data QInfo      = QInfo { qName   :: Name
-                        , qBound  :: Integer
-                        }
 
-data Ev         = Ev { qVal   :: Term
-                     , qScale :: Integer
-                     }
 
-data Form p     = And (Form p) (Form p)
-                | Or  (Form p) (Form p)
-                | TT
-                | FF
-                | Exists QInfo [(Ev,Form p)]   -- expands to OR, body OR
-                | All    QInfo [(Ev,Form p)]   -- expands to AND, body AND
-                | Pred p
 
-and' :: Form p -> Form p -> Form p
-and' FF _ = FF
-and' TT x = x
-and' (And x y) z = and' x (and' y z)
-and' _ FF = FF
-and' x TT = x
-and' x y  = And x y
+class PP a where
+  pp :: a -> Doc
 
-or' :: Form p -> Form p -> Form p
-or' TT _ = TT
-or' FF x = x
-or' (Or x y) z = or' x (or' y z)
-or' _ TT = TT
-or' x FF = x
-or' x y  = Or x y
+instance PP Term where
+  pp (Term m k) | isEmpty vars  = text (show k)
+                | k == 0        = vars
+                | k > 0         = vars <+> char '+' <+> text (show k)
+                | otherwise     = vars <+> char '-' <+> text (show $ abs k)
+    where ppvar (x,n) = sign <+> co <+> text (var_name x)
+            where (sign,co)
+                     | n == -1    = (char '-', empty)
+                     | n < 0      = (char '-', text (show (abs n)) <+> char '*')
+                     | n == 1     = (char '+', empty)
+                     | otherwise  = (char '+', text (show n) <+> char '*')
+          first_var (x,1)  = text (var_name x)
+          first_var (x,-1) = char '-' <> text (var_name x)
+          first_var (x,n)  = text (show n) <+> char '*' <+> text (var_name x)
 
+          vars = case filter ((/= 0) . snd) (Map.toList m) of
+                   []     -> empty
+                   v : vs -> first_var v <+> hsep (map ppvar vs)
+
+instance Show Term where
+  show x = show (pp x)
+
+instance Eq Term where
+  t1 == t2  = is_constant (t1 - t2) == Just 0
+
+instance Num Term where
+  fromInteger n             = Term Map.empty n
+  Term m1 n1 + Term m2 n2   = Term (Map.unionWith (+) m1 m2) (n1 + n2)
+  negate (Term m n)         = Term (Map.map negate m) (negate n)
+  t1 * t2  = case fmap (.* t2) (is_constant t1) `mplus`
+                  fmap (.* t1) (is_constant t2) of
+               Just t  -> t
+               Nothing -> error $ unlines [ "[(*) @ Term] Non-linear product:"
+                                          , "  *** " ++ show t1
+                                          , "  *** " ++ show t2
+                                          ]
+  signum t  = case is_constant t of
+                Just n  -> num (signum n)
+                Nothing -> error $ unlines [ "[signum @ Term]: Non-constant:"
+                                           , " *** " ++ show t
+                                           ]
+
+  abs t   = case is_constant t of
+                Just n  -> num (abs n)
+                Nothing -> error $ unlines [ "[abs @ Term]: Non-constant:"
+                                           , " *** " ++ show t
+                                           ]
+  
+
+-- | Check if a term is a constant (i.e., contains no variables).
+-- If so, then we return the constant, otherwise we return 'Nothing'.
+is_constant :: Term -> Maybe Integer
+is_constant (Term m n) = guard (all (0 ==) (Map.elems m)) >> return n
+
+(.*) :: Integer -> Term -> Term
+0 .* _        = 0
+1 .* t        = t
+k .* Term m n = Term (Map.map (k *) m) (k * n)
+
+
+-- Propositions ----------------------------------------------------------------
+
+data PredSym    = FF | LT | LEQ | EQ | Divs Integer {- +ve -}
+data Pred       = Pred PredSym Bool -- Bool: positive (i.e. non-negated)?
+data Prop       = Pred :> [Term]    
+data Conn       = And | Or deriving Eq
+data Form       = Conn Conn Form Form | Prop Prop
+
+abs_form       :: Form -> ([Prop],[Prop] -> Form)
+abs_form fo     = let (ps,skel) = loop [] fo
+                  in (reverse ps, fst . skel)
+  where loop ps (Conn c p q) =
+          let (ps1,f1) = loop ps p
+              (ps2,f2) = loop ps1 q
+          in (ps2, \fs -> let (p1,fs1) = f1 fs
+                              (p2,fs2) = f2 fs1
+                          in (Conn c p1 p2, fs2))
+        loop ps (Prop p) = (p:ps, \(f:fs) -> (Prop f,fs))
+
+
+instance PP PredSym where
+  pp p = case p of
+    FF      -> text "false"
+    LT      -> text "<"
+    LEQ     -> text "<="
+    EQ      -> text "==="
+    Divs n  -> text (show n) <+> text "|"
 
 instance PP Pred where
-  pp (Op2 op t1 t2) = pp t1 <+> pp op <+> pp t2
-  pp (Op1 op t1)    = pp op <+> pp t1
+  pp (Pred p True) = pp p
+  pp (Pred p False) = case p of
+    FF      -> text "true"
+    LT      -> text ">="
+    LEQ     -> text ">"
+    EQ      -> text "=/="
+    Divs n  -> text (show n) <+> text "/|"
 
-instance PP VarPred where
-  pp (VOp2 op t1) = text "_" <+> pp op <+> pp t1
-  pp (VOp1 op t1) = pp op <+> text "_ +" <+> pp t1
-  pp (GreaterThen t)  = text "_ >" <+> pp t
-  pp (GreaterThenEqual t)  = text "_ >=" <+> pp t
-  pp (Independent p)  = pp p
+instance PP Prop where
+  pp (p :> [t1,t2]) = pp t1 <+> pp p <+> pp t2
+  pp (p :> ts)      = pp p <+> hsep (map pp ts)
 
-instance PP Op1 where
-  pp (Divides x)    = text (show x) <+> char '|'
-  pp (NotDivides x) = text (show x) <+> text "/|"
+instance Show Prop where show = show . pp
 
-instance PP Op2 where
-  pp LessThen       = text "<"
-  pp LessThenEqual  = text "<="
-  pp Equal          = text "="
-  pp NotEqual       = text "/="
+instance PP Conn where
+  pp And  = text "/\\"
+  pp Or   = text "\\/"
 
-instance PP Ev where
-  pp (Ev t 1)       = pp t
-  pp (Ev t n)       = pp t <+> text "/" <+> text (show n)
+instance PP Form where
+  pp me@(Conn c _ _) = hang (pp c) 2 (vcat $ map pp $ jn me [])
+    where jn (Conn c1 p1 q1) fs | c == c1 = jn p1 (jn q1 fs)
+          jn f fs = f : fs
+  pp (Prop p)     = pp p
 
-instance PP p => PP (Form p) where
-  pp fo = case fo of
-    TT      -> text "True"
-    FF      -> text "False"
-    And x y -> hang (text "AND") 2 (vcat [ pp x, pp y ])
-    Or  x y -> hang (text "OR")  2 (vcat [ pp x, pp y ])
-    Exists x fs -> hang (text "OR" <+> text (var_name (qName x))
-                        <+> text "= 1 .." <+> text (show (qBound x))) 2
-                              (vcat [ pp ev <> colon <+> pp f | (ev,f) <- fs ])
+not' :: Form -> Form
+not' (Conn c t1 t2) = Conn (not_conn c) (not' t1) (not' t2)
+not' (Prop p)       = Prop (not_prop p)
 
-    All x fs    -> hang (text "AND" <+> text (var_name (qName x))
-                        <+> text "= 1 .." <+> text (show (qBound x))) 2
-                              (vcat [ pp ev <> colon <+> pp f | (ev,f) <- fs ])
-    Pred p  -> pp p
+ff' :: Form
+ff' = Prop $ Pred FF True :>[]
 
-instance PP Formula where
-  pp (F f)  = pp (f 0)
+and' :: Form -> Form -> Form
+and' p q = Conn And p q
 
+or' :: Form -> Form -> Form
+or' p q = Conn Or p q
 
-not' :: Form Pred -> Form Pred
-not' t = case t of
-  TT      -> FF
-  FF      -> TT
-  And p q -> Or (not' p) (not' q)
-  Or  p q -> And (not' p) (not' q)
-  Exists x fs -> All x    [ (ev, not' f) | (ev, f) <- fs ]
-  All x    fs -> Exists x [ (ev, not' f) | (ev, f) <- fs ]
-  Pred p -> Pred $ case p of
-    Op2 op t1 t2 -> case op of
-      LessThen      -> Op2 LessThenEqual t2 t1
-      LessThenEqual -> Op2 LessThen t2 t1
-      Equal         -> Op2 NotEqual t1 t2
-      NotEqual      -> Op2 Equal t1 t2
-    Op1 op t1 -> case op of
-      Divides k     -> Op1 (NotDivides k) t1
-      NotDivides k  -> Op1 (Divides k) t1
+ors' :: [Form] -> Form
+ors' [] = ff'
+ors' xs = foldr1 or' xs
 
 
-other_op :: Op2 -> Term -> VarPred
-other_op op = case op of
-  LessThen      -> GreaterThen
-  LessThenEqual -> GreaterThenEqual
-  Equal         -> VOp2 Equal
-  NotEqual      -> VOp2 NotEqual
 
-norm :: Name -> Integer -> Pred -> (Integer, VarPred)
-norm x n (Op2 op t1 t2)
-  | k1 == k2  = (1, Independent $ Op2 op t1' t2')
-  | k1 > k2   = scale n (k1 - k2) (VOp2 op)     (t2' .-. t1')
-  | otherwise = scale n (k2 - k1) (other_op op) (t1' .-. t2')
+not_conn :: Conn -> Conn
+not_conn And = Or
+not_conn Or  = And
+
+not_prop :: Prop -> Prop
+not_prop (f :> ts) = not_pred f :> ts
+
+not_pred :: Pred -> Pred
+not_pred (Pred p pos) = Pred p (not pos)
+
+
+data NormProp = Ind Prop
+              | L Pred Term
+
+instance PP NormProp where
+  pp (Ind p)  = pp p
+  pp (L p@(Pred (Divs {}) _) t) = pp p <+> text "_ +" <+> pp t
+  pp (L p t)                    = text "_" <+> pp p <+> pp t
+
+instance Show NormProp where show = show . pp
+
+norm2 :: Name -> Integer -> Pred -> Term -> Term -> (Integer,NormProp)
+norm2 x final_k p t1 t2
+  | k1 == k2   = (1, Ind (p :> [t1',t2']))
+  | k1 > k2    = (abs k, L p t)
+  | otherwise  = (abs k, L p' t)
 
   where t1' = rm_var x t1
         t2' = rm_var x t2
@@ -354,290 +325,206 @@ norm x n (Op2 op t1 t2)
         k1  = coeff x t1
         k2  = coeff x t2
 
+        k   = k1 - k2
+        t   = (final_k `div` k) .* (t2' - t1')   -- only used when k /= 0
+       
+        p'  = case p of
+                Pred LT b  -> Pred LEQ (not b)
+                Pred LEQ b -> Pred LT (not b)
+                _          -> p
+  
+norm1 :: Name -> Integer -> Pred -> Term -> (Integer,NormProp)
+norm1 x final_k p@(Pred (Divs d) b) t
+  | k == 0    = (1, Ind (p :> [t]))
+  | otherwise = (abs k, L ps (l .* t'))
 
-norm x n p@(Op1 op t)
-  | k == 0    = (1, Independent p)
-  | k > 0     = scale n k          (scaled_op k) t'
-  | otherwise = scale n (negate k) (scaled_op (negate k)) (neg t')
-  where t' = rm_var x t
-        k  = coeff x t
+  where t'  = rm_var x t
+        k   = coeff x t
 
-        scaled_op k' = case op of
-                         Divides d     -> VOp1 $ Divides    $ d * (n `div` k')
-                         NotDivides d  -> VOp1 $ NotDivides $ d * (n `div` k')
+        l   = final_k `div` k
+        ps  = Pred (Divs (d * abs l)) b
 
-scale :: Integer -> Integer -> (Term -> VarPred) -> Term -> (Integer, VarPred)
-scale n k f t = (k, f ((n `div` k) *. t))
-
-occurs _ TT             = False
-occurs _ FF             = False
-occurs x (And p q)      = occurs x p || occurs x q
-occurs x (Or p q)       = occurs x p || occurs x q
-occurs x (Exists _ fs)  = any (occurs x . snd) fs
-occurs x (All _ fs)     = any (occurs x . snd) fs
-occurs x (Pred p)       = occurs_pred x p
-
-occurs_pred x (Op2 _ t1 t2) = occurs_term x t1 || occurs_term x t2
-occurs_pred x (Op1 _ t1)    = occurs_term x t1
-
-occurs_term x t             = coeff x t /= 0
-
--- NOTE: When equal use one with fewer variables?
-exists' :: Name -> Form Pred -> Form Pred
-exists' _ TT            = TT
-exists' _ FF            = FF
-exists' x (Or p q)      = Or (exists' x p) (exists' x q)
-exists' x (Exists y fs) = Exists y [ (ev, exists' x f) | (ev,f) <- fs ]
-exists' x (And p q)
-  | not (occurs x p)    = And p (exists' x q)
-  | not (occurs x q)    = and' (exists' x p) q
-
-exists' x t = let (t1,d,k,as,bs) = analyze x t
-              in if longer_or_equal as bs
-                    then ver_b d k t1 bs
-                    else ver_a d k t1 as
-
-  where
-  ver_a d k f as = -- trace ("USING A: " ++ unwords (map (show.pp) as)) $
-    Or ( let ev = neg (var x)
-         in Exists (QInfo x d) [ (Ev ev k, body pos_inf x ev f) ]
-       )
-       ( Exists (QInfo x d) $
-           [ (Ev ev k, body normal x ev f) | a <- as, let ev = a .-. var x ]
-       )
-
-  ver_b d k f bs = -- trace ("USING B: " ++ unwords (map (show.pp) bs)) $
-    Or ( let ev = var x
-         in Exists (QInfo x d) [ (Ev ev k, body neg_inf x ev f) ]
-       )
-       ( Exists (QInfo x d)
-          [ (Ev ev k, body normal x ev f) | b <- bs, let ev = b .+. var x ]
-       )
+norm1 _ _ _ _ = error "(bug) norm1 applied to a non-unary operator"
 
 
-var :: Name -> Term
-var x = Term (Map.singleton x 1) 0
+norm_prop :: Name -> Integer -> Prop -> (Integer,NormProp)
+norm_prop _ _ p@(_ :> [])           = (1,Ind p)
+norm_prop x final_k (p :> [t])      = norm1 x final_k p t
+norm_prop x final_k (p :> [t1,t2])  = norm2 x final_k p t1 t2
+norm_prop _ _ _                     = error "(bug) norm_prop on arity > 2"
+
+norm_props :: Name -> [Prop] -> (Integer,[NormProp])
+norm_props x ps = (final_k, ps1)
+  where (ks,ps1) = unzip $ map (norm_prop x final_k) ps
+        final_k  = lcms ks
+
+a_b_sets :: ([Term],[Term]) -> NormProp -> ([Term],[Term])
+a_b_sets (as,bs) p = case p of
+  Ind _ -> (as,bs)
+
+  L (Pred op True) t ->
+    case op of
+      LT  -> (t     : as,           bs)
+      LEQ -> ((t+1) : as,           bs)
+      EQ  -> ((t+1) : as, (t - 1) : bs)
+      _   -> (        as,           bs)
+
+  L (Pred op False) t ->
+    case op of
+      LT  -> (        as, (t-1)   : bs)
+      LEQ -> (        as, t       : bs)
+      EQ  -> (t     : as, t       : bs)
+      _   -> (        as,           bs)
 
 
-expand_q :: ([Form p] -> Form p)
-         -> (Name -> Integer -> p -> p)
-         -> QInfo -> [(Ev,Form p)] -> Form p
-expand_q mk su x fs = mk [ subst su (qName x) n f | n <- [ 1 .. qBound x ],
-                                                    (_,f) <- fs
+analyze_props :: Name -> [Prop] -> ( [NormProp]
+                                   , Integer    -- scale
+                                   , Integer    -- bound
+                                   , [Term]     -- A set
+                                   , [Term]     -- B set
+                                   )
+analyze_props x ps = (ps1, final_k, bnd, as, bs)
+  where (ks,ps1)  = unzip $ map (norm_prop x final_k) ps
+        final_k   = lcms ks
+        (as,bs)   = foldl' a_b_sets ([],[]) ps1
+        bnd       = lcms (final_k : [ d | L (Pred (Divs d) _) _ <- ps1 ])
+
+from_bool :: Bool -> Prop
+from_bool True  = Pred FF False :> []
+from_bool False = Pred FF True :> []
+
+neg_inf :: NormProp -> Term -> Prop
+neg_inf prop t = case prop of
+  Ind p -> p
+  L ps@(Pred op pos) t1 -> case op of
+    LT      -> from_bool pos
+    LEQ     -> from_bool pos
+    EQ      -> from_bool (not pos)
+    Divs {} -> ps :> [t + t1]
+    FF      -> error "(bug) FF in NormPred"
+
+pos_inf :: NormProp -> Term -> Prop
+pos_inf prop t = case prop of
+  Ind p -> p
+  L ps@(Pred op pos) t1 -> case op of
+    LT      -> from_bool (not pos)
+    LEQ     -> from_bool (not pos)
+    EQ      -> from_bool (not pos)
+    Divs {} -> ps :> [t + t1]
+    FF      -> error "(bug) FF in NormPred"
+
+normal :: NormProp -> Term -> Prop
+normal prop t = case prop of
+  Ind p -> p
+  L ps@(Pred (Divs {}) _) t1  -> ps :> [t + t1]
+  L ps t1                     -> ps :> [t,t1]
+
+
+data Ex = Ex [(Name,Integer)]
+             [(Integer,Term)]
+             [Prop]
+             ([Prop] -> Form)
+
+instance PP Ex where
+  pp (Ex xs ps ss _) = hang (text "OR" <+> hsep (map quant xs)) 2
+             ( text "!" <+> hsep (map (parens . divs) ps)
+            $$ vcat (map pp ss)
+             )
+    where quant (x,n) = parens $ text (var_name x) <> colon <> text (show n)
+          divs (x,t)  = text (show x) <+> text "|" <+> pp t
+
+
+
+
+ex_base :: Form -> Ex
+ex_base f = Ex [] [] ps skel
+  where (ps,skel) = abs_form f
+
+ex_step :: Name -> Ex -> [Ex]
+ex_step x (Ex xs ds ps skel) = if longer_or_equal as bs then ver_b else ver_a
+  where (ps1,k,d,as,bs) = analyze_props x ps
+        ver_a = ( let arg = negate (var x)
+                  in Ex ((x,d)   : xs)
+                        ((k,arg) : ds)
+                        (map (`pos_inf` arg) ps1)
+                        skel
+                ) : [ let arg = a - var x
+                      in Ex ((x,d) : xs)
+                            ((k,arg) : ds)
+                            (map (`normal` arg) ps1)
+                            skel 
+                       | a <- as ]
+        ver_b = ( let arg = var x
+                  in Ex ((x,d)   : xs)
+                        ((k,arg) : ds)
+                        (map (`neg_inf` arg) ps1)
+                        skel
+                ) : [ let arg = b + var x
+                      in Ex ((x,d) : xs)
+                            ((k,arg) : ds)
+                            (map (`normal` arg) ps1)
+                            skel 
+                       | b <- bs ]
+
+
+
+expand :: Ex -> Form
+expand e | trace (show (pp e)) False = undefined
+expand (Ex xs ds ps skel) = ors'
+                       $ [ foldl and' f1 qs
+                            | env <- mk xs
+                            , let qs = map (divs env) ds
+                            , let f1 = skel (map (subst_prop env) ps)
                          ]
+  where divs env (x,a)  = Prop $ Pred (Divs x) True :> [ subst_term env a ]
+        mk ((x,d):qs)   = [ Map.insert x n m | m <- mk qs, n <- [ 1 .. d ] ]
+        mk []           = [ Map.empty ]
 
-subst :: (Name -> Integer -> p -> p)
-      -> Name -> Integer -> Form p -> Form p
-subst su x n fo = case fo of
-  TT          -> TT
-  FF          -> FF
-  And p q     -> And (subst su x n p) (subst su x n q)
-  Or  p q     -> Or  (subst su x n p) (subst su x n q)
-  Exists q fs -> Exists q [ (subst_ev x n ev, subst su x n f) | (ev,f) <- fs ]
-  All    q fs -> All q    [ (subst_ev x n ev, subst su x n f) | (ev,f) <- fs ]
-  Pred p      -> Pred (su x n p)
+type Env = Map.IntMap Integer
 
-subst_pred :: Name -> Integer -> Pred -> Pred
-subst_pred x n p = case p of
-  Op2 op t1 t2 -> Op2 op (subst_term x n t1) (subst_term x n t2)
-  Op1 op t1    -> Op1 op (subst_term x n t1)
+subst_prop :: Env -> Prop -> Prop
+subst_prop env (p :> ts) = p :> map (subst_term env) ts
 
-subst_ev :: Name -> Integer -> Ev -> Ev
-subst_ev x n ev = ev { qVal = subst_term x n (qVal ev) }
+subst_term :: Env -> Term -> Term
+subst_term env (Term m n) =
+  let (xs,vs) = unzip $ Map.toList $ Map.intersectionWith (*) env m
+  in Term (foldl' (flip Map.delete) m xs) (foldl' (+) n vs)
 
-subst_ev' :: Name -> Term -> Ev -> Ev
-subst_ev' x n ev = ev { qVal = subst_term' x n (qVal ev) }
-
-subst_term :: Name -> Integer -> Term -> Term
-subst_term x n (Term m k) =
- case Map.updateLookupWithKey (\_ _ -> Nothing) x m of
-   (mbv,m1) -> Term m1 (maybe k (\v -> n * v + k) mbv)
-
-subst_term' :: Name -> Term -> Term -> Term
-subst_term' x n t = coeff x t *. n .+. rm_var x t
-
-
-
-analyze :: Name -> Form Pred
-        -> ( Form VarPred     -- Normalized formula
-           , Integer          -- delta
-           , Integer          -- scale
-           , [Term]           -- A set
-           , [Term]           -- B set
-           )
-
-
-analyze x term = ( And t1 (Pred $ VOp1 (Divides final_k) (num 0))
-                 , d1, final_k, as1, bs1)
-
-  where (t1, final_k, d1, as1, bs1) = loop term
-
-        loop f = trace ("LOOP: " ++ var_name x ++ "\n " ++ show (pp f)) $ case f of
-          TT -> (TT, 1, 1, [], [])
-          FF -> (FF, 1, 1, [], [])
-
-          And p q -> let (f1,k1,d1,as1,bs1) = loop p
-                         (f2,k2,d2,as2,bs2) = loop q
-                     in (And f1 f2, lcm k1 k2, lcm d1 d2
-                        , as1 ++ as2, bs1 ++ bs2
-                        )
-
-          Or p q  -> let (f1,k1,d1,as1,bs1) = loop p
-                         (f2,k2,d2,as2,bs2) = loop q
-                     in (Or f1 f2, lcm k1 k2, lcm d1 d2
-                        , as1 ++ as2, bs1 ++ bs2
-                        )
-
-           --- XXX
-          Exists q a -> loop (expand_q (foldr or' FF) subst_pred q a)
-          --- All q a    -> loop (expand_q (foldr and' TT) subst_pred q a)
-
-          Pred p ->
-            let (k,f1) = norm x final_k p
-                (d, as, bs) = case f1 of
-                   VOp2 op t -> case op of
-                     LessThen         -> (1, [t], [])
-                     LessThenEqual    -> (1, [t .+ 1], [])
-                     Equal            -> (1, [t .+ 1], [t .- 1])
-                     NotEqual         -> (1, [t],[t])
-
-                   GreaterThen t      -> (1, [], [t])
-                   GreaterThenEqual t -> (1, [], [t .- 1])
-                   VOp1 op _          -> (d2, [], [])
-                     where d2 = case op of
-                                  Divides delta    -> delta
-                                  NotDivides delta -> delta
-                   Independent {}     -> (1, [], [])
-            in (Pred f1, k, d, as, bs)
-
-
-
-
--- Special cases for the body of an existential --------------------------------
-
--- Assumes no shadowing of quantifiers
-body :: (VarPred -> Term -> Form Pred) -> Name -> Term -> Form VarPred
-      -> Form Pred
-body how x t fo = case fo of
-  TT         -> TT
-  FF         -> FF
-  Pred p     -> how p t
-  And f1 f2  -> and' (body how x t f1) (body how x t f2)
-  Or  f1 f2  -> or'  (body how x t f1) (body how x t f2)
-  Exists y fs ->
-    Exists y [ (subst_ev' x t ev, body how x t f) | (ev,f) <- fs ]
-  All y fs ->
-    All y    [ (subst_ev' x t ev, body how x t f) | (ev,f) <- fs ]
-
-normal :: VarPred -> Term -> Form Pred
-normal p t = case p of
-  VOp2 op t1          -> Pred $ Op2 op t t1
-  GreaterThen t1      -> Pred $ Op2 LessThen t1 t
-  GreaterThenEqual t1 -> Pred $ Op2 LessThenEqual t1 t
-  VOp1 (Divides 1) _     -> TT
-  VOp1 (NotDivides 1) _  -> FF
-  VOp1 op t1          -> Pred $ Op1 op (t .+. t1)
-  Independent p1      -> Pred p1
-
-neg_inf :: VarPred -> Term -> Form Pred
-neg_inf p t = case p of
-  VOp2 op _           -> case op of
-    LessThen          -> TT
-    LessThenEqual     -> TT
-    Equal             -> FF
-    NotEqual          -> TT
-  GreaterThen {}      -> FF
-  GreaterThenEqual {} -> FF
-  VOp1 (Divides 1) _  -> TT
-  VOp1 (NotDivides 1) _ -> FF
-  VOp1 op t1          -> Pred (Op1 op (t .+. t1)) -- depends on var.
-  Independent p1      -> Pred p1
-
-pos_inf :: VarPred -> Term -> Form Pred
-pos_inf p t = case p of
-  VOp2 op _           -> case op of
-    LessThen          -> FF
-    LessThenEqual     -> FF
-    Equal             -> FF
-    NotEqual          -> TT
-  GreaterThen {}      -> TT
-  GreaterThenEqual {} -> TT
-  VOp1 (Divides 1) _  -> TT
-  VOp1 (NotDivides 1) _ -> FF
-  VOp1 op t1          -> Pred (Op1 op (t .+. t1)) -- depends on var.
-  Independent p1      -> Pred p1
+exists_many :: [Name] -> Form -> Form
+exists_many xs f  = ors'
+                  $ map expand 
+                  $ foldr (concatMap . ex_step) [ex_base f] xs
 
 
 
 -- Evaluation ------------------------------------------------------------------
 
-type Env = Map.IntMap Integer
+eval_form :: Form -> Bool
+eval_form (Conn c p q) = eval_conn c (eval_form p) (eval_form q)
+eval_form (Prop p)     = eval_prop p
 
-extend :: Name -> Integer -> Env -> Env
-extend x y = Map.insert x y
+eval_conn :: Conn -> Bool -> Bool -> Bool
+eval_conn And = (&&)
+eval_conn Or  = (||)
 
+eval_prop :: Prop -> Bool
+eval_prop (Pred p pos :> ts) = if pos then res else not res
+  where res = eval_pred p (map eval_term ts)
 
-eval_top :: Env -> Form Pred -> [Env]
-eval_top env TT         = [ env ]
-eval_top _ FF           = []
-eval_top env (Or p q)   = eval_top env p ++ eval_top env q
-eval_top env (And p q)  = [ Map.union a1 a2 | a1 <- eval_top env p
-                                            , a2 <- eval_top env q ]
+eval_pred :: PredSym -> [Integer] -> Bool
+eval_pred FF []         = False
+eval_pred (Divs d) [k]  = mod k d == 0
+eval_pred LT [x,y]      = x < y
+eval_pred LEQ [x,y]     = x <= y
+eval_pred EQ [x,y]      = x == y
+eval_pred _ _           = error "Type error"
 
-eval_top env (Exists x fs) =
-  [ ans | n      <- [ 1 .. qBound x ],
-          (ev,f) <- fs,
-          ans    <- eval_top (extend (qName x) n env) f
-  ]
-eval_top env (All x fs) = map Map.unions $ sequence
-  [ ans | n      <- [ 1 .. qBound x ],
-          (ev,f) <- fs,
-          let ans = eval_top (extend (qName x) n env) f
-  ]
-
-eval_top env (Pred p)
-  | eval_pred env p = [ env ]
-  | otherwise       = []    -- report counter example
-
-eval_form :: Env -> Form Pred -> Bool
-eval_form env fo = case fo of
-  TT            -> True
-  FF            -> False
-  And p q       -> eval_form env p && eval_form env q
-  Or  p q       -> eval_form env p || eval_form env q
-  Exists q fs   -> or [ eval_form (extend (qName q) n env) f
-                                            | (_,f) <- fs,
-                                              n <- [ 1 .. qBound q ] ]
-  All q fs      -> and [ eval_form (extend (qName q) n env) f
-                                            | (_,f) <- fs,
-                                              n <- [ 1 .. qBound q ] ]
-  Pred p        -> eval_pred env p
-
-eval_pred :: Env -> Pred -> Bool
-eval_pred env p = case p of
-  Op2 op t1 t2  -> eval_op2 op (eval_term env t1) (eval_term env t2)
-  Op1 op t1     -> eval_op1 op (eval_term env t1)
-
-eval_op2 :: Op2 -> Integer -> Integer -> Bool
-eval_op2 op = case op of
-  LessThen      -> (<)
-  LessThenEqual -> (<=)
-  Equal         -> (==)
-  NotEqual      -> (/=)
-
-eval_op1 :: Op1 -> Integer -> Bool
-eval_op1 op x = case op of
-  Divides k     -> (x `mod` k) == 0
-  NotDivides k  -> (x `mod` k) /= 0
-
-eval_term :: Env -> Term -> Integer
-eval_term env (Term m k) = sum (k : map evvar (Map.toList m))
-  where evvar (x,n) = n * Map.findWithDefault 0 x env
+-- There should be no free variables.
+eval_term :: Term -> Integer
+eval_term (Term _ k) = k
 
 
 --------------------------------------------------------------------------------
-
-
 
 -- Misc -----------------------------------------------------------------------
 
@@ -646,5 +533,5 @@ longer_or_equal (_:xs) (_:ys) = longer_or_equal xs ys
 longer_or_equal [] (_:_)      = False
 longer_or_equal _ _           = True
 
-
-
+lcms :: Integral a => [a] -> a
+lcms xs = foldr lcm 1 xs
