@@ -4,11 +4,12 @@
     first order formulas over integers with addition.
 
 Based on the paper:
-  author: D.C.Cooper
-  title:  "Theorem Proving in Arithmetic without Multiplication"
-  year:   1972
+ * author: D.C.Cooper
+ * title:  "Theorem Proving in Arithmetic without Multiplication"
+ * year:   1972
 -}
 module Presburger where
+
 
 import qualified Data.IntMap as Map
 import Data.Maybe
@@ -94,26 +95,31 @@ t1 =/= t2           = lift $ Prop $ Pred EQ False :> [t1,t2]
 1 |. _              = true
 k |. t              = lift $ Prop $ Pred (Divs k) True :> [t]
 
+{-
+class Quantified a where
+  exists' :: Int -> a -> Form
+  forall' :: Int -> a -> Form
 
-class Exists a where
-  exists' :: [Name] -> (Term -> a) -> Formula
 
-instance Exists Formula where
-  exists' xs f = F (\x -> let F g = f (var x) in exists_many (x:xs) (g (x+1)))
+instance Quantified Form where
+  exists' n f = exists_many [1 .. n] f
+  forall' n f = not' $ exists_many [1 .. n] $ not' f
 
-instance Exists t => Exists (Term -> t) where
+instance Quantified t => Quantified (Term -> t) where
+  exists' n f = exists' (n+1) (f (var n))
+  forall' 
+    
+
+instance Quantified t => Quantified (Term -> t) where
   exists' xs f = F $ \x -> let F g = exists' (x:xs) (f (var x)) in g (x+1)
 
 -- | Check for the existance of an integer that satisfies the formula.
-exists             :: Exists t => (Term -> t) -> Formula
-exists f            = exists' [] f
+exists             :: Quantified t => t -> Form
+exists f            = exists' 0 f
 
-{-
--- | Check for the existance of an integer that satisfies the formula.
-exists             :: (Term -> Formula) -> Formula
 -- | Check if all integers satisfy the formula.
-forall             :: ([Term] -> Formula) -> Formula
-forall t            = not_ $ exists $ \x -> not_ (t x)
+forall             :: Quantified t => t -> Form
+forall t            = not' $ exists $ \x -> not' (t x)
 
 -- | Check for the existance of a natural number that satisfies the formula.
 exists_nat         :: (Term -> Formula) -> Formula
@@ -141,11 +147,11 @@ var_name x          = let (a,b) = divMod x 26
                           rest = if a == 0 then "" else show a
                       in toEnum (97 + b) : rest
 
-coeff              :: Name -> Term -> Integer
-coeff x (Term m _)  = fromMaybe 0 (Map.lookup x m)
-
-rm_var             :: Name -> Term -> Term
-rm_var x (Term m k) = Term (Map.delete x m) k
+-- | @split_term x (n * x + t1) = (n,t1)
+-- @x@ does not occur in @t1@
+split_term         :: Name -> Term -> (Integer,Term)
+split_term x (Term m n) = (fromMaybe 0 c, Term m1 n)
+  where (c,m1) = Map.updateLookupWithKey (\_ _ -> Nothing) x m
 
 var                :: Name -> Term
 var x               = Term (Map.singleton x 1) 0
@@ -302,6 +308,8 @@ not_prop (f :> ts) = not_pred f :> ts
 not_pred :: Pred -> Pred
 not_pred (Pred p pos) = Pred p (not pos)
 
+-- Eliminating existential quantifiers -----------------------------------------
+
 
 data NormProp = Ind Prop
               | L Pred Term
@@ -319,11 +327,8 @@ norm2 x final_k p t1 t2
   | k1 > k2    = (abs k, L p t)
   | otherwise  = (abs k, L p' t)
 
-  where t1' = rm_var x t1
-        t2' = rm_var x t2
-
-        k1  = coeff x t1
-        k2  = coeff x t2
+  where (k1,t1') = split_term x t1
+        (k2,t2') = split_term x t2
 
         k   = k1 - k2
         t   = (final_k `div` k) .* (t2' - t1')   -- only used when k /= 0
@@ -338,11 +343,9 @@ norm1 x final_k p@(Pred (Divs d) b) t
   | k == 0    = (1, Ind (p :> [t]))
   | otherwise = (abs k, L ps (l .* t'))
 
-  where t'  = rm_var x t
-        k   = coeff x t
-
-        l   = final_k `div` k
-        ps  = Pred (Divs (d * abs l)) b
+  where (k,t')  = split_term x t
+        l       = final_k `div` k
+        ps      = Pred (Divs (d * abs l)) b
 
 norm1 _ _ _ _ = error "(bug) norm1 applied to a non-unary operator"
 
@@ -358,35 +361,35 @@ norm_props x ps = (final_k, ps1)
   where (ks,ps1) = unzip $ map (norm_prop x final_k) ps
         final_k  = lcms ks
 
-a_b_sets :: ([Term],[Term]) -> NormProp -> ([Term],[Term])
-a_b_sets (as,bs) p = case p of
-  Ind _ -> (as,bs)
+-- | The integer is "length as - length bs"
+a_b_sets :: (Integer,[Term],[Term]) -> NormProp -> (Integer,[Term],[Term])
+a_b_sets (o,as,bs) p = case p of
+  Ind _ -> (o,as,bs)
 
   L (Pred op True) t ->
     case op of
-      LT  -> (t     : as,           bs)
-      LEQ -> ((t+1) : as,           bs)
-      EQ  -> ((t+1) : as, (t - 1) : bs)
-      _   -> (        as,           bs)
+      LT  -> (1 + o , t     : as,         bs)
+      LEQ -> (1 + o , (t+1) : as,         bs)
+      EQ  -> (o     , (t+1) : as, (t-1) : bs)
+      _   -> (o     ,         as,         bs)
 
   L (Pred op False) t ->
     case op of
-      LT  -> (        as, (t-1)   : bs)
-      LEQ -> (        as, t       : bs)
-      EQ  -> (t     : as, t       : bs)
-      _   -> (        as,           bs)
+      LT  -> (o - 1 ,         as, (t-1) : bs)
+      LEQ -> (o - 1 ,         as, t     : bs)
+      EQ  -> (o     , t     : as, t     : bs)
+      _   -> (o     ,         as,         bs)
 
 
 analyze_props :: Name -> [Prop] -> ( [NormProp]
                                    , Integer    -- scale
                                    , Integer    -- bound
-                                   , [Term]     -- A set
-                                   , [Term]     -- B set
+                                   , Either [Term] [Term]  -- A set or B set
                                    )
-analyze_props x ps = (ps1, final_k, bnd, as, bs)
+analyze_props x ps = (ps1, final_k, bnd, if o < 0 then Left as else Right bs)
   where (ks,ps1)  = unzip $ map (norm_prop x final_k) ps
         final_k   = lcms ks
-        (as,bs)   = foldl' a_b_sets ([],[]) ps1
+        (o,as,bs) = foldl' a_b_sets (0,[],[]) ps1
         bnd       = lcms (final_k : [ d | L (Pred (Divs d) _) _ <- ps1 ])
 
 from_bool :: Bool -> Prop
@@ -421,64 +424,47 @@ normal prop t = case prop of
 
 
 data Ex = Ex [(Name,Integer)]
-             [(Integer,Term)]
+             [Constraint]
              [Prop]
-             ([Prop] -> Form)
 
 instance PP Ex where
-  pp (Ex xs ps ss _) = hang (text "OR" <+> hsep (map quant xs)) 2
+  pp (Ex xs ps ss) = hang (text "OR" <+> hsep (map quant xs)) 2
              ( text "!" <+> hsep (map (parens . divs) ps)
             $$ vcat (map pp ss)
              )
     where quant (x,n) = parens $ text (var_name x) <> colon <> text (show n)
           divs (x,t)  = text (show x) <+> text "|" <+> pp t
 
-
-
-
-ex_base :: Form -> Ex
-ex_base f = Ex [] [] ps skel
+exists_many :: [Name] -> Form -> Form
+exists_many xs f  = ors'
+                  $ map (expand skel)
+                  $ foldr (concatMap . ex_step) [Ex [] [] ps] xs
   where (ps,skel) = abs_form f
 
+
 ex_step :: Name -> Ex -> [Ex]
-ex_step x (Ex xs ds ps skel) = if longer_or_equal as bs then ver_b else ver_a
-  where (ps1,k,d,as,bs) = analyze_props x ps
-        ver_a = ( let arg = negate (var x)
-                  in Ex ((x,d)   : xs)
-                        ((k,arg) : ds)
-                        (map (`pos_inf` arg) ps1)
-                        skel
-                ) : [ let arg = a - var x
-                      in Ex ((x,d) : xs)
-                            ((k,arg) : ds)
-                            (map (`normal` arg) ps1)
-                            skel 
-                       | a <- as ]
-        ver_b = ( let arg = var x
-                  in Ex ((x,d)   : xs)
-                        ((k,arg) : ds)
-                        (map (`neg_inf` arg) ps1)
-                        skel
-                ) : [ let arg = b + var x
-                      in Ex ((x,d) : xs)
-                            ((k,arg) : ds)
-                            (map (`normal` arg) ps1)
-                            skel 
-                       | b <- bs ]
+ex_step x (Ex xs ds ps) = case as_or_bs of
+  Left as -> 
+    ( let arg = negate (var x)
+      in Ex ((x,d) : xs) ((k,arg) : ds) (map (`pos_inf` arg) ps1)
+    ) : [ let arg = a - var x
+          in Ex ((x,d) : xs) ((k,arg) : ds) (map (`normal` arg) ps1) | a <- as ]
+
+  Right bs ->
+    ( let arg = var x
+      in Ex ((x,d) : xs) ((k,arg) : ds) (map (`neg_inf` arg) ps1)
+    ) : [ let arg = b + var x
+          in Ex ((x,d) : xs) ((k,arg) : ds) (map (`normal` arg) ps1) | b <- bs ]
+
+  where (ps1,k,d,as_or_bs) = analyze_props x ps
 
 
+expand :: ([Prop] -> Form) -> Ex -> Form
+expand _ e | trace (show (pp e)) False = undefined
+expand skel (Ex xs ds ps) =
+  ors' [ skel (map (subst_prop env) ps) | env <- elim xs ds ]
 
-expand :: Ex -> Form
-expand e | trace (show (pp e)) False = undefined
-expand (Ex xs ds ps skel) = ors'
-                       $ [ foldl and' f1 qs
-                            | env <- mk xs
-                            , let qs = map (divs env) ds
-                            , let f1 = skel (map (subst_prop env) ps)
-                         ]
-  where divs env (x,a)  = Prop $ Pred (Divs x) True :> [ subst_term env a ]
-        mk ((x,d):qs)   = [ Map.insert x n m | m <- mk qs, n <- [ 1 .. d ] ]
-        mk []           = [ Map.empty ]
+
 
 type Env = Map.IntMap Integer
 
@@ -490,48 +476,134 @@ subst_term env (Term m n) =
   let (xs,vs) = unzip $ Map.toList $ Map.intersectionWith (*) env m
   in Term (foldl' (flip Map.delete) m xs) (foldl' (+) n vs)
 
-exists_many :: [Name] -> Form -> Form
-exists_many xs f  = ors'
-                  $ map expand 
-                  $ foldr (concatMap . ex_step) [ex_base f] xs
 
 
 
 -- Evaluation ------------------------------------------------------------------
 
+-- The meanings of formulas.
 eval_form :: Form -> Bool
 eval_form (Conn c p q) = eval_conn c (eval_form p) (eval_form q)
 eval_form (Prop p)     = eval_prop p
 
+-- The meanings of connectives.
 eval_conn :: Conn -> Bool -> Bool -> Bool
 eval_conn And = (&&)
 eval_conn Or  = (||)
 
+-- The meanings of atomic propositions.
 eval_prop :: Prop -> Bool
 eval_prop (Pred p pos :> ts) = if pos then res else not res
   where res = eval_pred p (map eval_term ts)
 
+-- The meanings of predicate symbols.
 eval_pred :: PredSym -> [Integer] -> Bool
-eval_pred FF []         = False
-eval_pred (Divs d) [k]  = mod k d == 0
-eval_pred LT [x,y]      = x < y
-eval_pred LEQ [x,y]     = x <= y
-eval_pred EQ [x,y]      = x == y
-eval_pred _ _           = error "Type error"
+eval_pred p ts = case (p,ts) of
+  (FF,     [])    -> False
+  (Divs d, [k])   -> divides d k
+  (LT,     [x,y]) -> x < y
+  (LEQ,    [x,y]) -> x <= y
+  (EQ,     [x,y]) -> x == y
+  _               -> error "Type error"
 
--- There should be no free variables.
+-- We define: "d | a" as "exists y. d * y = a"
+divides :: Integral a => a -> a -> Bool
+0 `divides` 0 = True
+0 `divides` _ = False
+x `divides` y = mod y x == 0
+
+-- The meaning of a term with no free variables.
+-- NOTE: We do not check that there are no free variables.
 eval_term :: Term -> Integer
 eval_term (Term _ k) = k
 
-
+-- The meaning of a term with free variables
+eval_term_env :: Term -> Env -> Integer
+eval_term_env (Term m k) env = sum (k : map eval_var (Map.toList m))
+  where eval_var (x,c) = case Map.lookup x env of
+                           Nothing -> 0
+                           Just v  -> c * v
 --------------------------------------------------------------------------------
 
--- Misc -----------------------------------------------------------------------
 
-longer_or_equal :: [a] -> [a] -> Bool
-longer_or_equal (_:xs) (_:ys) = longer_or_equal xs ys
-longer_or_equal [] (_:_)      = False
-longer_or_equal _ _           = True
+-- Solving divides constraints -------------------------------------------------
+-- See the paper's appendix.
+
+
+-- | let (p,q,r) = extended_gcd x y
+--   in (x * p + y * q = r)  &&  (gcd x y = r)
+extended_gcd :: Integral a => a -> a -> (a,a,a)
+extended_gcd arg1 arg2 = loop arg1 arg2 0 1 1 0
+  where loop a b x lastx y lasty
+          | b /= 0    = let (q,b') = divMod a b
+                            x'     = lastx - q * x
+                            y'     = lasty - q * y
+                        in x' `seq` y' `seq` loop b b' x' x y' y
+          | otherwise = (lastx,lasty,a)
+
+
+type Constraint     = (Integer,Term)
+type VarConstraint  = (Integer,Integer,Term)
+
+-- m | (x * a1 + b1) /\ (n | x * a2 + b2)
+theorem1 :: VarConstraint -> VarConstraint -> (VarConstraint, Constraint)
+theorem1 (m,a1,b1) (n,a2,b2) = (new_x, new_other)
+  where new_x     = (m * n, d, (p*n) .* b1 + (q * m) .* b2)
+        new_other = (d, a2 .* b1 - a1 .* b2)
+
+        (p,q,d)   = extended_gcd (a1 * n) (a2 * m)
+
+-- solutions for x in [1 .. bnd] of: m | x * a + b
+theorem2 :: Integer -> (Integer,Integer,Integer) -> [Integer]
+theorem2 bnd (m,a,b)
+  | r == 0      = [ t * k - c | t <- [ lower .. upper ] ]
+  | otherwise   = []
+  where k           = div m d
+        c           = p * qu
+        (p,_,d)     = extended_gcd a m
+        (qu,r)      = divMod b d
+
+        (lower',r1) = divMod (1 + c) k
+        lower       = if r1 == 0 then lower' else lower' + 1  -- hmm
+        upper       = div (bnd + c) k
+
+  -- lower and upper:
+  -- t * k - c = 1   --> t = (1 + c) / k
+  -- t * k - c = bnd --> t = (bnd + c) / k
+
+elim :: [(Name,Integer)] -> [Constraint] -> [ Env ]
+elim [] ts = if all chk ts then [ Map.empty ] else []
+  where chk (x,t) = divides x (eval_term t)
+elim ((x,bnd):xs) cs = do env <- elim xs cs1
+                          v <- case mb of
+                                 Nothing      -> [ 1 .. bnd ]
+                                 Just (a,b,t) ->
+                                   theorem2 bnd (a,b,eval_term_env t env)
+                          return (Map.insert x v env)
+                                               
+  where (mb,cs1) = elim_var x cs
+          
+
+
+
+elim_var :: Name -> [Constraint] -> (Maybe VarConstraint, [Constraint])
+elim_var x cs = case foldl' part ([],[]) cs of
+                  ([], have_not)     -> (Nothing, have_not)
+                  (h : hs, have_not) -> let (c,hn) = step h hs have_not
+                                        in (Just c,hn)
+  where part s@(have,have_not) c@(m,t) 
+          | m == 1      = s
+          | a == 0      = (have        , c:have_not)
+          | otherwise   = ((m,a,b):have,   have_not)
+            where (a,b) = split_term x t
+
+        step :: VarConstraint -> [VarConstraint] -> [Constraint]
+             -> (VarConstraint,[Constraint])
+        step h [] ns      = (h,ns)
+        step h (h1:hs) ns = step h2 hs (n : ns)
+          where (h2,n) = theorem1 h h1
+
+-- Misc -----------------------------------------------------------------------
 
 lcms :: Integral a => [a] -> a
 lcms xs = foldr lcm 1 xs
