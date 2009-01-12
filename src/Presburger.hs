@@ -95,28 +95,21 @@ t1 =/= t2           = lift $ Prop $ Pred EQ False :> [t1,t2]
 1 |. _              = true
 k |. t              = lift $ Prop $ Pred (Divs k) True :> [t]
 
-{-
 class Quantified a where
-  exists' :: Int -> a -> Form
-  forall' :: Int -> a -> Form
+  exists' :: [Name] -> a -> Formula
 
-
-instance Quantified Form where
-  exists' n f = exists_many [1 .. n] f
-  forall' n f = not' $ exists_many [1 .. n] $ not' f
+instance Quantified Formula where
+  exists' n (F f) = F (\m -> exists_many n (f m))
 
 instance Quantified t => Quantified (Term -> t) where
-  exists' n f = exists' (n+1) (f (var n))
-  forall' 
+  exists' n q = F (\m -> let F f = exists' (m:n) (q (var m))
+                         in f (m+1))
     
-
-instance Quantified t => Quantified (Term -> t) where
-  exists' xs f = F $ \x -> let F g = exists' (x:xs) (f (var x)) in g (x+1)
-
 -- | Check for the existance of an integer that satisfies the formula.
-exists             :: Quantified t => t -> Form
-exists f            = exists' 0 f
+exists             :: Quantified t => t -> Formula
+exists              = exists' []
 
+{-
 -- | Check if all integers satisfy the formula.
 forall             :: Quantified t => t -> Form
 forall t            = not' $ exists $ \x -> not' (t x)
@@ -446,17 +439,20 @@ ex_step :: Name -> Ex -> [Ex]
 ex_step x (Ex xs ds ps) = case as_or_bs of
   Left as -> 
     ( let arg = negate (var x)
-      in Ex ((x,d) : xs) ((k,arg) : ds) (map (`pos_inf` arg) ps1)
+      in Ex ((x,d) : xs) (constr arg) (map (`pos_inf` arg) ps1)
     ) : [ let arg = a - var x
-          in Ex ((x,d) : xs) ((k,arg) : ds) (map (`normal` arg) ps1) | a <- as ]
+          in Ex ((x,d) : xs) (constr arg) (map (`normal` arg) ps1) | a <- as ]
 
   Right bs ->
     ( let arg = var x
-      in Ex ((x,d) : xs) ((k,arg) : ds) (map (`neg_inf` arg) ps1)
+      in Ex ((x,d) : xs) (constr arg) (map (`neg_inf` arg) ps1)
     ) : [ let arg = b + var x
-          in Ex ((x,d) : xs) ((k,arg) : ds) (map (`normal` arg) ps1) | b <- bs ]
+          in Ex ((x,d) : xs) (constr arg) (map (`normal` arg) ps1) | b <- bs ]
 
   where (ps1,k,d,as_or_bs) = analyze_props x ps
+        constr t = if k == 1 then ds else (k,t) : ds
+          
+
 
 
 expand :: ([Prop] -> Form) -> Ex -> Form
