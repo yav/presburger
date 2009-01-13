@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
-
 {-| This module implements Cooper's algorithm for deciding
     first order formulas over integers with addition.
 
@@ -8,137 +6,112 @@ Based on the paper:
  * title:  "Theorem Proving in Arithmetic without Multiplication"
  * year:   1972
 -}
-module Presburger where
+module Presburger
+  ( check, simplify, Formula(..), Term, (.*), is_constant
+  , PP(..)
+  ) where
 
 
 import qualified Data.IntMap as Map
-import Data.Maybe
-import Data.List
+import Data.Maybe(fromMaybe)
+import Data.List(nub,foldl')
 import Control.Monad(mplus,guard)
 import Prelude hiding (LT,EQ)
 
 import Text.PrettyPrint.HughesPJ
-import Debug.Trace
 
+
+-- | Check if a formula is true.
 check :: Formula -> Bool
-check (F f) = eval_form (f 0)
+check f = eval_form (pre 0 f)
+
+simplify :: Formula -> Formula
+simplify f = invert (pre 0 f)
 
 -- Sugar -----------------------------------------------------------------------
 
--- | First order formulas.
-newtype Formula     = F (Int -> Form)
 
-instance PP Formula where
-  pp (F f) = pp (f 0)
+infixl 3 :/\:
+infixl 2 :\/:
+infixr 1 :=>:
 
-instance Show Formula where show = show . pp
+infix 4 :<:, :<=:, :>:, :>=:, :=:, :/=:, :|
 
--- | False formula.
-false              :: Formula
-false               = lift ff'
 
--- | True formula.
-true               :: Formula
-true                = not_ false
+-- Forst-oreder formulas for Presburger arithmetic.
+data Formula  = Formula :/\: Formula
+              | Formula :\/: Formula
+              | Formula :=>: Formula
+              | Not Formula
+              | Exists (Term -> Formula)
+              | Forall (Term -> Formula)
+              | TRUE
+              | FALSE
+              | Term :<:   Term
+              | Term :>:   Term
+              | Term :<=:  Term
+              | Term :>=:  Term
+              | Term :=:   Term
+              | Term :/=:  Term
+              | Integer :| Term
 
-infixl 3 /\
--- | The conjunction of two formulas.
-(/\)               :: Formula -> Formula -> Formula
-F p /\ F q          = F (\x -> and' (p x) (q x))
+pre :: Int -> Formula -> Form
+pre n form = case form of
+  f1 :/\: f2        -> and' (pre n f1) (pre n f2)
+  f1 :\/: f2        -> or'  (pre n f1) (pre n f2)
+  f1 :=>: f2        -> pre n (Not f1 :\/: f2)
+  Exists f          -> pre_ex (n + 1) [n] (f (var n))
+  Forall f          -> pre n (Not (Exists (Not . f)))
+  TRUE              -> tt'
+  FALSE             -> ff'
+  t1 :<: t2         -> lt' t1 t2
+  t1 :>: t2         -> lt' t2 t1
+  t1 :<=: t2        -> leq' t1 t2
+  t1 :>=: t2        -> leq' t2 t1
+  t1 :=: t2         -> eq' t1 t2
+  t1 :/=: t2        -> neq' t1 t2
+  k :| t            -> divs' k t
+  Not form1 -> case form1 of
+    Not f           -> pre n f
+    Forall f        -> pre n (Exists (Not . f))
+    _               -> not' (pre n form1)
 
-infixl 2 \/
--- | The disjunction of two formulas.
-(\/)               :: Formula -> Formula -> Formula
-F p \/ F q          = F (\x -> or' (p x) (q x))
+pre_ex :: Int -> [Name] -> Formula -> Form
+pre_ex n xs form = case form of
+  Exists f          -> pre_ex (n+1) (n:xs) (f (var (n+1)))
+  f1 :\/: f2        -> or' (pre_ex n xs f1) (pre_ex n xs f2)
+  _                 -> exists_many xs (pre n form)
 
-infixr 1 ==>
--- | Implication.
-(==>)              :: Formula -> Formula -> Formula
-p ==> q             = not_ p \/ q
+invert :: Form -> Formula
+invert form = case form of
+  Conn And f1 f2 -> invert f1 :/\: invert f2
+  Conn Or  f1 f2 -> invert f1 :\/: invert f2
+  Prop prop -> case prop of
+    Pred FF   True      :> []      -> FALSE
+    Pred FF   False     :> []      -> TRUE
+    Pred LT   True      :> [t1,t2] -> t1 :<: t2
+    Pred LT   False     :> [t1,t2] -> t1 :>=: t2
+    Pred LEQ  True      :> [t1,t2] -> t1 :<=: t2
+    Pred LEQ  False     :> [t1,t2] -> t1 :>: t2
+    Pred EQ   True      :> [t1,t2] -> t1 :=: t2
+    Pred EQ   False     :> [t1,t2] -> t1 :/=: t2
+    Pred (Divs n) True  :> [t]     -> n :| t
+    Pred (Divs n) False :> [t]     -> Not (n :| t)
+    _ -> error "(bug) Type error in 'invert'"
 
--- | Negation.
-not_               :: Formula -> Formula
-not_ (F p)          = F (\x -> not' (p x))
-
-infix 4 .<.
--- | Check if one term is strictly smaller then another.
-(.<.)              :: Term -> Term -> Formula
-t1 .<. t2           = lift $ Prop $ Pred LT True :> [t1,t2]
-
-infix 4 .<=.
--- | Check if one term is smaller then, or equal to another.
-(.<=.)             :: Term -> Term -> Formula
-t1 .<=. t2          = lift $ Prop $ Pred LEQ True :> [t1,t2]
-
-infix 4 .>.
--- | Check if one term is strictly greater then another.
-(.>.)              :: Term -> Term -> Formula
-t1 .>. t2           = t2 .<. t1
-
-infix 4 .>=.
--- | Check if one term is greater-then, or equal to another.
-(.>=.)             :: Term -> Term -> Formula
-t1 .>=. t2          = t2 .<=. t1
-
-infix 4 ===
--- | Check if two terms are equal.
-(===)              :: Term -> Term -> Formula
-t1 === t2           = lift $ Prop $ Pred EQ True :> [t1,t2]
-
-infix 4 =/=
--- | Check if two terms are not equal.
-(=/=)              :: Term -> Term -> Formula
-t1 =/= t2           = lift $ Prop $ Pred EQ False :> [t1,t2]
-
--- | Check if a term is divisible by an integer constant.
-(|.)               :: Integer -> Term -> Formula
-1 |. _              = true
-k |. t              = lift $ Prop $ Pred (Divs k) True :> [t]
-
-class Quantified a where
-  exists' :: [Name] -> a -> Formula
-
-instance Quantified Formula where
-  exists' n (F f) = F (\m -> exists_many n (f m))
-
-instance Quantified t => Quantified (Term -> t) where
-  exists' n q = F (\m -> let F f = exists' (m:n) (q (var m))
-                         in f (m+1))
-    
--- | Check for the existance of an integer that satisfies the formula.
-exists             :: Quantified t => t -> Formula
-exists              = exists' []
-
-{-
--- | Check if all integers satisfy the formula.
-forall             :: Quantified t => t -> Form
-forall t            = not' $ exists $ \x -> not' (t x)
-
--- | Check for the existance of a natural number that satisfies the formula.
-exists_nat         :: (Term -> Formula) -> Formula
-exists_nat f        = exists $ \x -> x .>=. 0 /\ f x
-
--- | Check if all natural numbers satisfy the formula.
-forall_nat         :: (Term -> Formula) -> Formula
-forall_nat f        = not_ $ exists_nat $ \x -> not_ (f x)
--}
-
-lift :: Form -> Formula
-lift p = F (\_ -> p)
 
 -- Terms ----------------------------------------------------------------------
 
--- | Integer terms.
-data Term = Term (Map.IntMap Integer) Integer
-
+-- | Terms of Presburger arithmetic.
+-- Term are created by using the 'Num' class.
+-- WARNING: Presburger arithmetic only supports multiplication
+-- by a constant, trying to create invalid terms will result
+-- in a run-time error.  A more type-safe alternative is to
+-- use the '(.*)' operator.
+data Term           = Term (Map.IntMap Integer) Integer
 
 
 type Name           = Int
-
-var_name           :: Name -> String
-var_name x          = let (a,b) = divMod x 26
-                          rest = if a == 0 then "" else show a
-                      in toEnum (97 + b) : rest
 
 -- | @split_term x (n * x + t1) = (n,t1)
 -- @x@ does not occur in @t1@
@@ -153,41 +126,18 @@ num                :: Integer -> Term
 num n               = Term Map.empty n
 
 
-
-
-
-class PP a where
-  pp :: a -> Doc
-
-instance PP Term where
-  pp (Term m k) | isEmpty vars  = text (show k)
-                | k == 0        = vars
-                | k > 0         = vars <+> char '+' <+> text (show k)
-                | otherwise     = vars <+> char '-' <+> text (show $ abs k)
-    where ppvar (x,n) = sign <+> co <+> text (var_name x)
-            where (sign,co)
-                     | n == -1    = (char '-', empty)
-                     | n < 0      = (char '-', text (show (abs n)) <+> char '*')
-                     | n == 1     = (char '+', empty)
-                     | otherwise  = (char '+', text (show n) <+> char '*')
-          first_var (x,1)  = text (var_name x)
-          first_var (x,-1) = char '-' <> text (var_name x)
-          first_var (x,n)  = text (show n) <+> char '*' <+> text (var_name x)
-
-          vars = case filter ((/= 0) . snd) (Map.toList m) of
-                   []     -> empty
-                   v : vs -> first_var v <+> hsep (map ppvar vs)
-
-instance Show Term where
-  show x = show (pp x)
+--------------------------------------------------------------------------------
 
 instance Eq Term where
   t1 == t2  = is_constant (t1 - t2) == Just 0
 
 instance Num Term where
   fromInteger n             = Term Map.empty n
+
   Term m1 n1 + Term m2 n2   = Term (Map.unionWith (+) m1 m2) (n1 + n2)
+
   negate (Term m n)         = Term (Map.map negate m) (negate n)
+
   t1 * t2  = case fmap (.* t2) (is_constant t1) `mplus`
                   fmap (.* t1) (is_constant t2) of
                Just t  -> t
@@ -201,12 +151,12 @@ instance Num Term where
                                            , " *** " ++ show t
                                            ]
 
-  abs t   = case is_constant t of
+  abs t     = case is_constant t of
                 Just n  -> num (abs n)
                 Nothing -> error $ unlines [ "[abs @ Term]: Non-constant:"
                                            , " *** " ++ show t
                                            ]
-  
+
 
 -- | Check if a term is a constant (i.e., contains no variables).
 -- If so, then we return the constant, otherwise we return 'Nothing'.
@@ -219,11 +169,11 @@ is_constant (Term m n) = guard (all (0 ==) (Map.elems m)) >> return n
 k .* Term m n = Term (Map.map (k *) m) (k * n)
 
 
--- Propositions ----------------------------------------------------------------
+-- Formulas --------------------------------------------------------------------
 
 data PredSym    = FF | LT | LEQ | EQ | Divs Integer {- +ve -}
 data Pred       = Pred PredSym Bool -- Bool: positive (i.e. non-negated)?
-data Prop       = Pred :> [Term]    
+data Prop       = Pred :> [Term]
 data Conn       = And | Or deriving Eq
 data Form       = Conn Conn Form Form | Prop Prop
 
@@ -239,39 +189,6 @@ abs_form fo     = let (ps,skel) = loop [] fo
         loop ps (Prop p) = (p:ps, \(f:fs) -> (Prop f,fs))
 
 
-instance PP PredSym where
-  pp p = case p of
-    FF      -> text "false"
-    LT      -> text "<"
-    LEQ     -> text "<="
-    EQ      -> text "==="
-    Divs n  -> text (show n) <+> text "|"
-
-instance PP Pred where
-  pp (Pred p True) = pp p
-  pp (Pred p False) = case p of
-    FF      -> text "true"
-    LT      -> text ">="
-    LEQ     -> text ">"
-    EQ      -> text "=/="
-    Divs n  -> text (show n) <+> text "/|"
-
-instance PP Prop where
-  pp (p :> [t1,t2]) = pp t1 <+> pp p <+> pp t2
-  pp (p :> ts)      = pp p <+> hsep (map pp ts)
-
-instance Show Prop where show = show . pp
-
-instance PP Conn where
-  pp And  = text "/\\"
-  pp Or   = text "\\/"
-
-instance PP Form where
-  pp me@(Conn c _ _) = hang (pp c) 2 (vcat $ map pp $ jn me [])
-    where jn (Conn c1 p1 q1) fs | c == c1 = jn p1 (jn q1 fs)
-          jn f fs = f : fs
-  pp (Prop p)     = pp p
-
 not' :: Form -> Form
 not' (Conn c t1 t2) = Conn (not_conn c) (not' t1) (not' t2)
 not' (Prop p)       = Prop (not_prop p)
@@ -279,17 +196,33 @@ not' (Prop p)       = Prop (not_prop p)
 ff' :: Form
 ff' = Prop $ Pred FF True :>[]
 
+tt' :: Form
+tt' = Prop $ Pred FF False :>[]
+
+lt' :: Term -> Term -> Form
+lt' t1 t2 = Prop $ Pred LT True :> [t1,t2]
+
+leq' :: Term -> Term -> Form
+leq' t1 t2 = Prop $ Pred LEQ True :> [t1,t2]
+
+eq' :: Term -> Term -> Form
+eq' t1 t2 = Prop $ Pred EQ True :> [t1,t2]
+
+neq' :: Term -> Term -> Form
+neq' t1 t2 = Prop $ Pred EQ False :> [t1,t2]
+
 and' :: Form -> Form -> Form
 and' p q = Conn And p q
 
 or' :: Form -> Form -> Form
 or' p q = Conn Or p q
 
+divs' :: Integer -> Term -> Form
+divs' n t = Prop $ Pred (Divs n) True :> [t]
+
 ors' :: [Form] -> Form
 ors' [] = ff'
 ors' xs = foldr1 or' xs
-
-
 
 not_conn :: Conn -> Conn
 not_conn And = Or
@@ -301,18 +234,12 @@ not_prop (f :> ts) = not_pred f :> ts
 not_pred :: Pred -> Pred
 not_pred (Pred p pos) = Pred p (not pos)
 
--- Eliminating existential quantifiers -----------------------------------------
 
+
+-- Eliminating existential quantifiers -----------------------------------------
 
 data NormProp = Ind Prop
               | L Pred Term
-
-instance PP NormProp where
-  pp (Ind p)  = pp p
-  pp (L p@(Pred (Divs {}) _) t) = pp p <+> text "_ +" <+> pp t
-  pp (L p t)                    = text "_" <+> pp p <+> pp t
-
-instance Show NormProp where show = show . pp
 
 norm2 :: Name -> Integer -> Pred -> Term -> Term -> (Integer,NormProp)
 norm2 x final_k p t1 t2
@@ -325,12 +252,12 @@ norm2 x final_k p t1 t2
 
         k   = k1 - k2
         t   = (final_k `div` k) .* (t2' - t1')   -- only used when k /= 0
-       
+
         p'  = case p of
                 Pred LT b  -> Pred LEQ (not b)
                 Pred LEQ b -> Pred LT (not b)
                 _          -> p
-  
+
 norm1 :: Name -> Integer -> Pred -> Term -> (Integer,NormProp)
 norm1 x final_k p@(Pred (Divs d) b) t
   | k == 0    = (1, Ind (p :> [t]))
@@ -349,12 +276,7 @@ norm_prop x final_k (p :> [t])      = norm1 x final_k p t
 norm_prop x final_k (p :> [t1,t2])  = norm2 x final_k p t1 t2
 norm_prop _ _ _                     = error "(bug) norm_prop on arity > 2"
 
-norm_props :: Name -> [Prop] -> (Integer,[NormProp])
-norm_props x ps = (final_k, ps1)
-  where (ks,ps1) = unzip $ map (norm_prop x final_k) ps
-        final_k  = lcms ks
-
--- | The integer is "length as - length bs"
+-- The integer is "length as - length bs"
 a_b_sets :: (Integer,[Term],[Term]) -> NormProp -> (Integer,[Term],[Term])
 a_b_sets (o,as,bs) p = case p of
   Ind _ -> (o,as,bs)
@@ -420,18 +342,10 @@ data Ex = Ex [(Name,Integer)]
              [Constraint]
              [Prop]
 
-instance PP Ex where
-  pp (Ex xs ps ss) = hang (text "OR" <+> hsep (map quant xs)) 2
-             ( text "!" <+> hsep (map (parens . divs) ps)
-            $$ vcat (map pp ss)
-             )
-    where quant (x,n) = parens $ text (var_name x) <> colon <> text (show n)
-          divs (x,t)  = text (show x) <+> text "|" <+> pp t
-
 exists_many :: [Name] -> Form -> Form
 exists_many xs f  = ors'
                   $ map (expand skel)
-                  $ foldr (concatMap . ex_step) [Ex [] [] ps] xs
+                  $ foldr (concatMap . ex_step) [Ex [] [] ps] (nub xs)
   where (ps,skel) = abs_form f
 
 
@@ -451,12 +365,9 @@ ex_step x (Ex xs ds ps) = case as_or_bs of
 
   where (ps1,k,d,as_or_bs) = analyze_props x ps
         constr t = if k == 1 then ds else (k,t) : ds
-          
-
 
 
 expand :: ([Prop] -> Form) -> Ex -> Form
-expand _ e | trace (show (pp e)) False = undefined
 expand skel (Ex xs ds ps) =
   ors' [ skel (map (subst_prop env) ps) | env <- elim xs ds ]
 
@@ -576,9 +487,9 @@ elim ((x,bnd):xs) cs = do env <- elim xs cs1
                                  Just (a,b,t) ->
                                    theorem2 bnd (a,b,eval_term_env t env)
                           return (Map.insert x v env)
-                                               
+
   where (mb,cs1) = elim_var x cs
-          
+
 
 
 
@@ -587,7 +498,7 @@ elim_var x cs = case foldl' part ([],[]) cs of
                   ([], have_not)     -> (Nothing, have_not)
                   (h : hs, have_not) -> let (c,hn) = step h hs have_not
                                         in (Just c,hn)
-  where part s@(have,have_not) c@(m,t) 
+  where part s@(have,have_not) c@(m,t)
           | m == 1      = s
           | a == 0      = (have        , c:have_not)
           | otherwise   = ((m,a,b):have,   have_not)
@@ -603,3 +514,123 @@ elim_var x cs = case foldl' part ([],[]) cs of
 
 lcms :: Integral a => [a] -> a
 lcms xs = foldr lcm 1 xs
+
+
+-- Pretty Printing -------------------------------------------------------------
+
+class PP a where
+  pp :: a -> Doc
+
+
+var_name           :: Name -> String
+var_name x          = let (a,b) = divMod x 26
+                          rest = if a == 0 then "" else show a
+                      in toEnum (97 + b) : rest
+
+instance Show Term where show x = show (pp x)
+instance PP Term where
+  pp (Term m k) | isEmpty vars  = text (show k)
+                | k == 0        = vars
+                | k > 0         = vars <+> char '+' <+> text (show k)
+                | otherwise     = vars <+> char '-' <+> text (show $ abs k)
+    where ppvar (x,n) = sign <+> co <+> text (var_name x)
+            where (sign,co)
+                     | n == -1    = (char '-', empty)
+                     | n < 0      = (char '-', text (show (abs n)) <+> char '*')
+                     | n == 1     = (char '+', empty)
+                     | otherwise  = (char '+', text (show n) <+> char '*')
+          first_var (x,1)  = text (var_name x)
+          first_var (x,-1) = char '-' <> text (var_name x)
+          first_var (x,n)  = text (show n) <+> char '*' <+> text (var_name x)
+
+          vars = case filter ((/= 0) . snd) (Map.toList m) of
+                   []     -> empty
+                   v : vs -> first_var v <+> hsep (map ppvar vs)
+
+
+-- 4: wrap term, not
+-- 3: wrap and
+-- 2: wrap or
+-- 1: wrap implies, quantifiers
+instance PP Formula where
+  pp = pp' 0 0
+    where
+    pp' :: Int -> Name -> Formula -> Doc
+    pp' n p form = case form of
+      f1 :/\: f2 | n < 3  -> pp' 2 p f1 <+> text "/\\" <+> pp' 2 p f2
+      f1 :\/: f2 | n < 2  -> pp' 1 p f1 <+> text "\\/" <+> pp' 1 p f2
+      f1 :=>: f2 | n < 1  -> pp' 1 p f1 <+> text "=>" <+> pp' 0 p f2
+      Not f      | n < 4  -> text "Not" <+> pp' 4 p f
+      Exists {}  | n < 1  -> pp_ex (text "exists") p form
+        where pp_ex d q (Exists g) = pp_ex (d <+> text (var_name q))
+                                                          (q+1) (g (var q))
+              pp_ex d q g          = d <> text "." <+> pp' 0 q g
+
+      Forall {} | n < 0 -> pp_ex (text "forall") p form
+        where pp_ex d q (Forall g) = pp_ex (d <+> text (var_name q))
+                                                          (q+1) (g (var q))
+              pp_ex d q g          = d <> text "." <+> pp' 0 q g
+      TRUE        -> text "true"
+      FALSE       -> text "false"
+      t1 :<:  t2 | n < 4  -> pp t1 <+> text "<"  <+> pp t2
+      t1 :>:  t2 | n < 4  -> pp t1 <+> text ">"  <+> pp t2
+      t1 :<=: t2 | n < 4  -> pp t1 <+> text "<=" <+> pp t2
+      t1 :>=: t2 | n < 4  -> pp t1 <+> text ">=" <+> pp t2
+      t1 :=:  t2 | n < 4  -> pp t1 <+> text "="  <+> pp t2
+      t1 :/=: t2 | n < 4  -> pp t1 <+> text "/=" <+> pp t2
+      k :| t1    | n < 4  -> text (show k) <+> text "|" <+> pp t1
+      _ -> parens (pp' 0 p form)
+
+instance Show Formula where show = show . pp
+
+
+
+instance PP PredSym where
+  pp p = case p of
+    FF      -> text "false"
+    LT      -> text "<"
+    LEQ     -> text "<="
+    EQ      -> text "==="
+    Divs n  -> text (show n) <+> text "|"
+
+instance PP Pred where
+  pp (Pred p True) = pp p
+  pp (Pred p False) = case p of
+    FF      -> text "true"
+    LT      -> text ">="
+    LEQ     -> text ">"
+    EQ      -> text "=/="
+    Divs n  -> text (show n) <+> text "/|"
+
+instance Show Prop where show = show . pp
+instance PP Prop where
+  pp (p :> [t1,t2]) = pp t1 <+> pp p <+> pp t2
+  pp (p :> ts)      = pp p <+> hsep (map pp ts)
+
+
+instance PP Conn where
+  pp And  = text "/\\"
+  pp Or   = text "\\/"
+
+instance PP Form where
+  pp me@(Conn c _ _) = hang (pp c) 2 (vcat $ map pp $ jn me [])
+    where jn (Conn c1 p1 q1) fs | c == c1 = jn p1 (jn q1 fs)
+          jn f fs = f : fs
+  pp (Prop p)     = pp p
+
+instance PP NormProp where
+  pp (Ind p)  = pp p
+  pp (L p@(Pred (Divs {}) _) t) = pp p <+> text "_ +" <+> pp t
+  pp (L p t)                    = text "_" <+> pp p <+> pp t
+
+instance Show NormProp where show = show . pp
+
+instance PP Ex where
+  pp (Ex xs ps ss) = hang (text "OR" <+> hsep (map quant xs)) 2
+             ( text "!" <+> hsep (map (parens . divs) ps)
+            $$ vcat (map pp ss)
+             )
+    where quant (x,n) = parens $ text (var_name x) <> colon <> text (show n)
+          divs (x,t)  = text (show x) <+> text "|" <+> pp t
+
+
