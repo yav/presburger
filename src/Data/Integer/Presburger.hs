@@ -6,7 +6,7 @@ Based on the paper:
  * title:  "Theorem Proving in Arithmetic without Multiplication"
  * year:   1972
 -}
-module Presburger
+module Data.Integer.Presburger
   ( check, simplify, Formula(..), Term, (.*), is_constant
   , PP(..)
   ) where
@@ -23,10 +23,10 @@ import Text.PrettyPrint.HughesPJ
 
 -- | Check if a formula is true.
 check :: Formula -> Bool
-check f = eval_form (pre 0 f)
+check f = eval_form (pre (True,0) f)
 
 simplify :: Formula -> Formula
-simplify f = invert (pre 0 f)
+simplify f = invert (pre (True,0) f)
 
 -- Sugar -----------------------------------------------------------------------
 
@@ -55,12 +55,13 @@ data Formula  = Formula :/\: Formula
               | Term :/=:  Term
               | Integer :| Term
 
-pre :: Int -> Formula -> Form
+pre :: (Bool,Int) -> Formula -> Form
 pre n form = case form of
   f1 :/\: f2        -> and' (pre n f1) (pre n f2)
   f1 :\/: f2        -> or'  (pre n f1) (pre n f2)
   f1 :=>: f2        -> pre n (Not f1 :\/: f2)
-  Exists f          -> pre_ex (n + 1) [n] (f (var n))
+  Exists f          -> pre_ex (top,x + 1) [x] (f (var x))
+    where (top,x) = n
   Forall f          -> pre n (Not (Exists (Not . f)))
   TRUE              -> tt'
   FALSE             -> ff'
@@ -76,11 +77,11 @@ pre n form = case form of
     Forall f        -> pre n (Exists (Not . f))
     _               -> not' (pre n form1)
 
-pre_ex :: Int -> [Name] -> Formula -> Form
-pre_ex n xs form = case form of
-  Exists f          -> pre_ex (n+1) (n:xs) (f (var (n+1)))
-  f1 :\/: f2        -> or' (pre_ex n xs f1) (pre_ex n xs f2)
-  _                 -> exists_many xs (pre n form)
+pre_ex :: (Bool,Int) -> [Name] -> Formula -> Form
+pre_ex (top,n) xs form = case form of
+  Exists f          -> pre_ex (top,n+1) (n:xs) (f (var (n+1)))
+  f1 :\/: f2        -> or' (pre_ex (top,n) xs f1) (pre_ex (top,n) xs f2)
+  _                 -> exists_many top xs (pre (False,n) form)
 
 invert :: Form -> Formula
 invert form = case form of
@@ -342,16 +343,17 @@ data Ex = Ex [(Name,Integer)]
              [Constraint]
              [Prop]
 
-exists_many :: [Name] -> Form -> Form
-exists_many xs f  = ors'
-                  $ map (expand skel)
+exists_many :: Bool -> [Name] -> Form -> Form
+exists_many top xs f  = ors'
+                  $ map exp_f
                   $ foldr (concatMap . ex_step) [Ex [] [] ps] (nub xs)
   where (ps,skel) = abs_form f
+        exp_f = if top then expand_top skel else expand skel
 
 
 ex_step :: Name -> Ex -> [Ex]
 ex_step x (Ex xs ds ps) = case as_or_bs of
-  Left as -> 
+  Left as ->
     ( let arg = negate (var x)
       in Ex ((x,d) : xs) (constr arg) (map (`pos_inf` arg) ps1)
     ) : [ let arg = a - var x
@@ -367,9 +369,20 @@ ex_step x (Ex xs ds ps) = case as_or_bs of
         constr t = if k == 1 then ds else (k,t) : ds
 
 
+expand_top :: ([Prop] -> Form) -> Ex -> Form
+expand_top skel (Ex xs ds ps) =
+  ors' [ skel (map (subst_prop env) ps) | env <- elim xs ds ]
+
 expand :: ([Prop] -> Form) -> Ex -> Form
 expand skel (Ex xs ds ps) =
-  ors' [ skel (map (subst_prop env) ps) | env <- elim xs ds ]
+  ors' [ foldr and' (skel (map (subst_prop env) ps)) (map (`ctr` env) ds)
+            | env <- envs xs ]
+
+  where envs []         = [ Map.empty ]
+        envs ((x,bnd):qs) = [ Map.insert x v env
+                                      | env <- envs qs, v <- [ 1 .. bnd ] ]
+
+        ctr (k,t) env = Prop (Pred (Divs k) True :> [ subst_term env t ])
 
 
 
@@ -428,7 +441,7 @@ eval_term (Term _ k) = k
 eval_term_env :: Term -> Env -> Integer
 eval_term_env (Term m k) env = sum (k : map eval_var (Map.toList m))
   where eval_var (x,c) = case Map.lookup x env of
-                           Nothing -> 0
+                           Nothing -> error "free var"
                            Just v  -> c * v
 --------------------------------------------------------------------------------
 
@@ -477,6 +490,9 @@ theorem2 bnd (m,a,b)
   -- lower and upper:
   -- t * k - c = 1   --> t = (1 + c) / k
   -- t * k - c = bnd --> t = (bnd + c) / k
+
+
+
 
 elim :: [(Name,Integer)] -> [Constraint] -> [ Env ]
 elim [] ts = if all chk ts then [ Map.empty ] else []
@@ -553,8 +569,22 @@ instance PP Term where
 -- 2: wrap or
 -- 1: wrap implies, quantifiers
 instance PP Formula where
-  pp = pp' 0 0
+  pp = pp1 0 -- ' 0 0
     where
+    pp1 :: Int -> Formula -> Doc
+    pp1 p form = case form of
+      _ :/\: _ -> hang (text "/\\") 2 (loop form)
+        where loop (f1 :/\: f2) = loop f1 $$ loop f2
+              loop f            = pp f
+
+      _ :\/: _ -> hang (text "\\/") 2 (loop form)
+        where loop (f1 :\/: f2) = loop f1 $$ loop f2
+              loop f            = pp f
+
+      _ -> pp' 0 p form
+
+
+
     pp' :: Int -> Name -> Formula -> Doc
     pp' n p form = case form of
       f1 :/\: f2 | n < 3  -> pp' 2 p f1 <+> text "/\\" <+> pp' 2 p f2
@@ -566,7 +596,7 @@ instance PP Formula where
                                                           (q+1) (g (var q))
               pp_ex d q g          = d <> text "." <+> pp' 0 q g
 
-      Forall {} | n < 0 -> pp_ex (text "forall") p form
+      Forall {} | n < 1 -> pp_ex (text "forall") p form
         where pp_ex d q (Forall g) = pp_ex (d <+> text (var_name q))
                                                           (q+1) (g (var q))
               pp_ex d q g          = d <> text "." <+> pp' 0 q g

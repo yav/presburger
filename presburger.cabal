@@ -8,9 +8,9 @@ Category:       Algorithms
 Synopsis:       Cooper's decision procedure for Presburger arithmetic.
 Description:    Cooper's decision procedure for Presburger arithmetic.
 hs-source-dirs: src
-Build-Depends:  base, containers
+Build-Depends:  base, containers, pretty
 Build-type:     Simple
-Exposed-modules: Presburger
+Exposed-modules: Data.Integer.Presburger
 
 Extensions:
 GHC-options:    -O2 -Wall
