@@ -3,6 +3,7 @@ Version:        0.1
 License:        BSD3
 License-file:   LICENSE
 Author:         Iavor S. Diatchki
+Homepage:       http://github.com/yav/presburger
 Maintainer:     diatchki@galois.com
 Category:       Algorithms
 Synopsis:       Cooper's decision procedure for Presburger arithmetic.
