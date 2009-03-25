@@ -114,7 +114,7 @@ data Term           = Term (Map.IntMap Integer) Integer
 
 type Name           = Int
 
--- | @split_term x (n * x + t1) = (n,t1)
+-- | @split_term x (n * x + t1) = (n,t1)@
 -- @x@ does not occur in @t1@
 split_term         :: Name -> Term -> (Integer,Term)
 split_term x (Term m n) = (fromMaybe 0 c, Term m1 n)
