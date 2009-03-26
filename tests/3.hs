@@ -12,4 +12,4 @@ mytest5 =
          :/\: c :=: e + 1
          :/\: e :=: 1
 
-
+main = print $ check mytest5
