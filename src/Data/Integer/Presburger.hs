@@ -79,7 +79,7 @@ pre n form = case form of
 
 pre_ex :: (Bool,Int) -> [Name] -> Formula -> Form
 pre_ex (top,n) xs form = case form of
-  Exists f          -> pre_ex (top,n+1) (n:xs) (f (var (n+1)))
+  Exists f          -> pre_ex (top,n+1) (n:xs) (f (var n))
   f1 :\/: f2        -> or' (pre_ex (top,n) xs f1) (pre_ex (top,n) xs f2)
   _                 -> exists_many top xs (pre (False,n) form)
 
