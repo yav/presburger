@@ -371,7 +371,8 @@ ex_step x (Ex xs ds ps) = case as_or_bs of
     ) : [ let arg = b + var x
           in Ex ((x,d) : xs) (constr arg) (map (`normal` arg) ps1) | b <- bs ]
 
-  where (ps1,k,d,as_or_bs) = analyze_props x ps
+  where (ps1,k,d',as_or_bs) = analyze_props x ps
+        d = lcms (d' : map fst ds)
         constr t = if k == 1 then ds else (k,t) : ds
 
 
