@@ -1,4 +1,6 @@
 import Data.Integer.Presburger
+import Debug.Trace
+
 
 l = 16 * 8 * 8
 
@@ -9,12 +11,12 @@ given = Forall $ \a ->
 
 divided :: Term -> Integer -> (Term -> Term -> Formula) -> Formula
 divided t k body =
-  Forall $ \q ->
-  Forall $ \r ->
-     ( 0 :<=: r
-  :/\: r :<=: fromInteger k
-  :/\: k .* q + r :=: t
-     ) :=>: body q r
+  Exists $ \q ->
+  Exists $ \r ->
+        0 :<=: r
+   :/\: r :<: fromInteger k
+   :/\: k .* q + r :=: t
+   :/\: body q r
 
 
 inferred = Forall $ \a ->
@@ -24,7 +26,8 @@ inferred = Forall $ \a ->
               b :=: 1 + q
 
 
-form = inferred :=>: given
+test1 = inferred :=>: given
+test2 = given :=>: inferred
 
 
 

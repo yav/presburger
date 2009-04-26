@@ -5,7 +5,6 @@ module Data.Integer.Presburger.Prop
 
 import Data.Integer.Presburger.Term as X
 
-
 -- | Possibly negated propositions.
 -- For example, we would express "t1 not equal to t2" like this:
 -- @Prop { negated = True, prop = Bin Equal t1 t2 }@
@@ -117,10 +116,11 @@ simplify_prop :: Prop PosP -> Prop PosP
 simplify_prop it@(Prop b p) =
   case p of
     Divides n t -> case is_constant t of
-                      Just v -> Prop (b == divides n v) FF
+                      Just v -> Prop (b /= divides n v) FF
                       Nothing -> it
+    Bin Equal t1 t2 | not b && t1 == t2 -> Prop True FF
     Bin op t1 t2 -> case (is_constant t1, is_constant t2) of
-                      (Just v1, Just v2) -> Prop (b == bin_op op v1 v2) FF
+                      (Just v1, Just v2) -> Prop (b /= bin_op op v1 v2) FF
                       _ -> it
     FF -> it
 
