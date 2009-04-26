@@ -1,5 +1,5 @@
 module Data.Integer.Presburger.Notation
-  ( check, Formula
+  ( check
   , module Data.Integer.Presburger.Notation
   ) where
 
