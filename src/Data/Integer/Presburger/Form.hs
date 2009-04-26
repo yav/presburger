@@ -204,8 +204,8 @@ instance PP p => PP (Form p) where
           jn f fs = f : fs
   pp (Leaf p)     = pp p
 
-  pp (Ex n q f) = hang (how <+> quant q) 2 (pp f)
-    where quant (x,b) = text (var_name x) <+> text ":" <+> text (show b)
+  pp (Ex n q f) = hang (how <+> quant q <> text ".") 2 (pp f)
+    where quant (x,b) = text (var_name x) <+> text "<=" <+> text (show b)
           how = (if n then text "Not" else empty) <+> text "Ex"
 
 
