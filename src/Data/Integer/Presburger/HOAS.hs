@@ -1,7 +1,7 @@
 module Data.Integer.Presburger.HOAS
-  (Formula(..), check
+  (Formula(..), check, translate
   , Term, (.*), is_constant
-  , PP(..) 
+  , PP(..)
   ) where
 
 import Data.Integer.Presburger.Form hiding (check)
