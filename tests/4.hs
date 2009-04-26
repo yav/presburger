@@ -26,8 +26,8 @@ inferred = Forall $ \a ->
               b :=: 1 + q
 
 
-test1 = inferred :=>: given
-test2 = given :=>: inferred
+test1 = inferred :<=>: given
+
 
 
 

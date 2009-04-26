@@ -14,6 +14,7 @@ check f = F.check (translate f)
 infixl 3 :/\:
 infixl 2 :\/:
 infixr 1 :=>:
+infix  0 :<=>:
 
 infix 4 :<:, :<=:, :>:, :>=:, :=:, :/=:, :|
 
@@ -21,6 +22,7 @@ infix 4 :<:, :<=:, :>:, :>=:, :=:, :/=:, :|
 data Formula  = Formula :/\: Formula
               | Formula :\/: Formula
               | Formula :=>: Formula
+              | Formula :<=>: Formula
               | Not Formula
               | Exists (Term -> Formula)
               | Forall (Term -> Formula)
@@ -41,6 +43,7 @@ translate = loop 0
           Forall f    -> loop n (Not (Exists (Not . f)))
           Not f       -> neg (loop n f)
           f1 :=>: f2  -> loop n (Not f1 :\/: f2)
+          f1 :<=>: f2 -> loop n (f1 :/\: f2 :\/: Not f1 :/\: Not f2)
           f1 :/\: f2  -> Node And (loop n f1) (loop n f2)
           f1 :\/: f2  -> Node Or  (loop n f1) (loop n f2)
           
@@ -82,6 +85,7 @@ instance PP Formula where
       f1 :/\: f2 | n < 3  -> pp' 2 p f1 <+> text "/\\" <+> pp' 2 p f2
       f1 :\/: f2 | n < 2  -> pp' 1 p f1 <+> text "\\/" <+> pp' 1 p f2
       f1 :=>: f2 | n < 1  -> pp' 1 p f1 <+> text "=>" <+> pp' 0 p f2
+      f1 :<=>: f2 | n < 1  -> pp' 1 p f1 <+> text "=>" <+> pp' 0 p f2
       Not f      | n < 4  -> text "Not" <+> pp' 4 p f
       Exists {}  | n < 1  -> pp_ex (text "exists") p form
         where pp_ex d q (Exists g) = pp_ex (d <+> text (var_name q))
