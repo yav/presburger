@@ -1,5 +1,5 @@
 Name:           presburger
-Version:        0.2
+Version:        0.3
 License:        BSD3
 License-file:   LICENSE
 Author:         Iavor S. Diatchki
@@ -11,7 +11,16 @@ Description:    Cooper's decision procedure for Presburger arithmetic.
 hs-source-dirs: src
 Build-Depends:  base, containers, pretty
 Build-type:     Simple
-Exposed-modules: Data.Integer.Presburger
+Exposed-modules:
+  Data.Integer.Presburger
+  Data.Integer.OldPresburger
+  Data.Integer.Presburger.Term
+  Data.Integer.Presburger.Prop
+  Data.Integer.Presburger.Form
+  Data.Integer.Presburger.SolveDiv
+  Data.Integer.Presburger.Notation
+  Data.Integer.Presburger.HOAS
+  Data.Integer.Presburger.Utils
 
 Extensions:
 GHC-options:    -O2 -Wall
