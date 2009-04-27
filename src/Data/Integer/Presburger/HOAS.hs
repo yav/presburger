@@ -1,5 +1,8 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module Data.Integer.Presburger.HOAS
-  (Formula(..), check, translate
+  ( Formula(..), check, translate
+  , Quant, exists, forall
   , Term, (.*), is_constant
   , PP(..)
   ) where
@@ -58,6 +61,19 @@ translate = loop 0
           t1 :>: t2   -> Leaf (Prop True (Bin LessThanEqual t1 t2))
             
           d :| t      -> Leaf (Prop False (Divides d t))
+
+class Quant t where
+  quant :: ((Term -> Formula) -> Formula) -> t -> Formula
+
+instance Quant Formula where
+  quant _ p = p
+
+instance Quant t => Quant (Term -> t) where
+  quant q p = q (\x -> quant q (p x))
+
+exists, forall :: Quant t => t -> Formula
+exists p  = quant Exists p
+forall p  = quant Forall p
 
 -- 4: wrap term, not
 -- 3: wrap and
