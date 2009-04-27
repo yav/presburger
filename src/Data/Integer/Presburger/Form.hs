@@ -111,7 +111,7 @@ simplify (Ex True (x,1) f)  = simplify (neg (subst_form x 1 f))
 
 simplify (Ex b x f) = case simplify f of
                         Leaf (Prop n FF) -> Leaf (Prop (not (b == n)) FF)
-                        f1               -> Ex b x f1  -- when bound is 1, just substitutite 1
+                        f1               -> Ex b x f1
                               
 simplify (Leaf l) = Leaf (simplify_prop l)
 
