@@ -162,14 +162,14 @@ form_bound (Ex _ _ f)      = form_bound f
 eval_form :: Form (Prop PosP) -> Env -> Bool
 eval_form (Node c p q) env  = eval_conn c (eval_form p env) (eval_form q env)
 eval_form (Leaf p) env      = eval_prop p env
-eval_form (Ex b x f) env0   = case splt f [x] of
-                                (xs,cs,f1) -> let v = any (eval_form f1) (elim env0 xs cs)
-                                              in if b then not v else v
+eval_form (Ex b x f) env0 =
+  case splt f [x] of
+    (xs,cs,f1) -> let v = any (eval_form f1) (elim env0 xs cs)
+                  in if b then not v else v
   where splt (Ex False y f1) ys = splt f1 (y:ys)
         splt f1 ys          = case split_divs f1 of
                                  (ds,f2) -> (ys,ds,f2)
-
-
+        
 
 split_ands :: Form p -> [Form p]
 split_ands form = loop form []
