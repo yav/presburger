@@ -45,7 +45,7 @@ translate = loop 0
           Exists f    -> ex_step n (loop (n+1) (f (var n)))
           Forall f    -> loop n (Not (Exists (Not . f)))
           Not f       -> neg (loop n f)
-          f1 :=>: f2  -> loop n (Not f1 :\/: f2)
+          f1 :=>: f2  -> loop n (f2 :\/: Not f1)
           f1 :<=>: f2 -> loop n (f1 :/\: f2 :\/: Not f1 :/\: Not f2)
           f1 :/\: f2  -> Node And (loop n f1) (loop n f2)
           f1 :\/: f2  -> Node Or  (loop n f1) (loop n f2)
