@@ -37,12 +37,23 @@ norm x p = case prop p of
   Bin op t1 t2
     | k1 == k2    -> Ind  p    { prop = Bin op t1' t2' }
     | k1 > k2     -> Norm p    { prop = CVarP (k1 - k2) (NBin op (t2' - t1')) }
-    | otherwise   -> Norm Prop { prop = CVarP (k2 - k1) (NBin op (t1' - t2'))
-                               , negated = if op == Equal then negated p
-                                                          else not (negated p)
+    | otherwise   -> Norm Prop { prop = CVarP (k2 - k1) (NBin op' (t1' - t2'))
+                               , negated = neg'
                                }
+                          
     where (k1,t1')  = split_term x t1   -- t1 = k1 * x + t1'
           (k2,t2')  = split_term x t2   -- t2 = k2 * x + t2'
+
+          (neg',op') = case op of
+                         Equal         -> (negated p, Equal)
+                         LessThan      -> (not (negated p), LessThanEqual)
+                         LessThanEqual -> (not (negated p), LessThan)
+ 
+    -- a < t        --> same
+    -- Not (a < t)  --> same
+    -- t < a        --> Not (a =< t)
+    -- Not (t < a)  --> a =< t
+
 
   Divides n t1
     | k1 == 0    -> Ind  p
