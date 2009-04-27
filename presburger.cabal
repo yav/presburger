@@ -20,6 +20,7 @@ Exposed-modules:
   Data.Integer.Presburger.SolveDiv
   Data.Integer.Presburger.Notation
   Data.Integer.Presburger.HOAS
+  Data.Integer.Presburger.ModArith
   Data.Integer.Presburger.Utils
 
 Extensions:
