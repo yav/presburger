@@ -14,7 +14,7 @@ data DivCtr     = Divs !Integer !Term
 -- "divisible by" constraints, we produce all possible assignments
 -- to the variables that are in bounds, and satisfy the constraints.
 elim :: Env -> [(Name,Integer)] -> [DivCtr] -> [ Env ]
-elim env0 [] ts = if all chk ts then [ env_empty ] else []
+elim env0 [] ts = if all chk ts then [ env0 ] else []
   where chk (Divs x t) = divides x (eval_term t env0)
 elim env0 ((x,bnd):xs) cs = do let (mb,cs1) = elim_var x cs
                                env <- elim env0 xs cs1
