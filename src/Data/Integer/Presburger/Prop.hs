@@ -47,7 +47,7 @@ norm x p = case prop p of
   Divides n t1
     | k1 == 0    -> Ind  p
     | k1 > 0     -> Norm p { prop = CVarP k1 (NDivides n t1') }
-    | otherwise  -> Norm p { prop = CVarP (negate k1) (NDivides n (negate t1))}
+    | otherwise  -> Norm p { prop = CVarP (negate k1) (NDivides n (negate t1'))}
     where(k1,t1') = split_term x t1     -- t1 = k1 * x + t1'
 
   FF -> Ind p
