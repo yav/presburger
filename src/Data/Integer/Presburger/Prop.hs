@@ -165,8 +165,12 @@ instance SignPP CVarP where
     NBin op t     -> it <+> pp_neg n op  <+> pp t
     NDivides d t  -> text (show d) <+> pp_neg_div n
                                    <+> it <+> text "+" <+> pp t
-    where it = text (show (coeff p)) <+> text "* _"
+    where it  | c == 1    = text "_"
+              | c == (-1) = text "- _"
+              | otherwise = text (show c) <+> text "* _"
 
+          c = coeff p 
+               
 
 instance SignPP p => PP (Prop p) where
   pp p  = pp_neg (negated p) (prop p)
