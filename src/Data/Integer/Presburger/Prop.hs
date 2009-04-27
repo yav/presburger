@@ -89,7 +89,7 @@ normal t p = case prop p of
 
 --------------------------------------------------------------------------------
 
--- The meanings of atomic propositions
+-- | The meanings of atomic propositions
 eval_prop :: Prop PosP -> Env -> Bool
 eval_prop (Prop neg p) env = if neg then not res else res
   where res = case p of
