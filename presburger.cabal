@@ -8,21 +8,27 @@ Maintainer:     diatchki@galois.com
 Category:       Algorithms
 Synopsis:       Cooper's decision procedure for Presburger arithmetic.
 Description:    Cooper's decision procedure for Presburger arithmetic.
-hs-source-dirs: src
-Build-Depends:  base, containers, pretty
 Build-type:     Simple
-Exposed-modules:
-  Data.Integer.Presburger
-  Data.Integer.OldPresburger
-  Data.Integer.Presburger.Term
-  Data.Integer.Presburger.Prop
-  Data.Integer.Presburger.Form
-  Data.Integer.Presburger.SolveDiv
-  Data.Integer.Presburger.Notation
-  Data.Integer.Presburger.HOAS
-  Data.Integer.Presburger.ModArith
-  Data.Integer.Presburger.Utils
+Cabal-version:  >= 1.2
 
-Extensions:
-GHC-options:    -O2 -Wall
+library
+  Build-Depends:  base, containers, pretty
+  hs-source-dirs: src
+  Exposed-modules:
+    Data.Integer.Presburger
+    Data.Integer.OldPresburger
+    Data.Integer.Presburger.Term
+    Data.Integer.Presburger.Prop
+    Data.Integer.Presburger.Form
+    Data.Integer.Presburger.SolveDiv
+    Data.Integer.Presburger.Notation
+    Data.Integer.Presburger.HOAS
+    Data.Integer.Presburger.ModArith
+    Data.Integer.Presburger.Utils
+
+  GHC-options:    -O2 -Wall
+
+source-repository head
+  type: git
+  location: git://github.com/yav/presburger.git
 
