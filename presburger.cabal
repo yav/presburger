@@ -9,7 +9,7 @@ Category:       Algorithms
 Synopsis:       Cooper's decision procedure for Presburger arithmetic.
 Description:    Cooper's decision procedure for Presburger arithmetic.
 Build-type:     Simple
-Cabal-version:  >= 1.2
+Cabal-version:  >= 1.6
 
 library
   Build-Depends:  base, containers, pretty
