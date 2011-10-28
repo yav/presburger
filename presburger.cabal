@@ -12,7 +12,7 @@ Build-type:     Simple
 Cabal-version:  >= 1.6
 
 library
-  Build-Depends:  base, containers, pretty
+  Build-Depends:  base < 10, containers, pretty
   hs-source-dirs: src
   Exposed-modules:
     Data.Integer.Presburger
