@@ -40,14 +40,14 @@ aCt :: Name -> Integer -> Atom -> Either Atom (Integer, Ct)
 aCt x c Atom { .. }
   | lC /= 0 = Right ( lC
                    , Atom { aLhs = tVar x
-                          , aRhs = tMul (div c lC) (aRhs - lRest)
+                          , aRhs = div c lC |*| (aRhs - lRest)
                           , .. })
   where
   (lC, lRest) = tSplitVar x aLhs
 aCt x c Atom { .. }
   | rC /= 0 = Right ( rC
                    , Atom { aLhs = tVar x
-                          , aRhs = tMul (div c rC) (aLhs - rRest)
+                          , aRhs = div c rC |*| (aLhs - rRest)
                           , aOp  = case aOp of
                                      Lt  -> Gt
                                      Leq -> Geq
@@ -63,7 +63,7 @@ aCt _ _ a = Left a
 aDivCt :: Name -> Integer -> DivCt -> Either DivCt (Integer, DivCt)
 aDivCt x c (m,t)
   | coeff /= 0  = let sc = div c coeff
-                  in Right (coeff, (abs (m * sc), tVar x + tMul sc rest))
+                  in Right (coeff, (abs (m * sc), tVar x + sc |*| rest))
   where (coeff,rest) = tSplitVar x t
 
 aDivCt _ _ d = Left d

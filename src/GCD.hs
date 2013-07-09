@@ -76,8 +76,8 @@ joinCts2 x (m, t1) (n, t2) =
   let (a,b)   = tSplitVar x t1
       (a',b') = tSplitVar x t2
       (d,p,q) = gcdE (a * n) (a' * m)
-  in ( ( m * n, tMul d (tVar x) + tMul (p * n) b + tMul (q * m) b' )
-     , ( d,     tMul a' b - tMul a b' )
+  in ( ( m * n, d |*| tVar x + (p * n) |*| b + (q * m) |*| b' )
+     , ( d,     a' |*| b - a |*| b' )
      )
 
 

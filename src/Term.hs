@@ -7,6 +7,7 @@ import           Text.PrettyPrint
 
 type Name = Int
 
+-- | The type of terms
 data Term = T Integer (IntMap Integer)
               deriving (Eq,Ord)
 
@@ -18,11 +19,11 @@ instance Num Term where
   x - y             = x + negate y
 
   x * y
-    | Just k <- isConst x = tMul k y
-    | Just k <- isConst y = tMul k x
+    | Just k <- isConst x = k |*| y
+    | Just k <- isConst y = k |*| x
     | otherwise           = error "Term: Non-linear multiplication"
 
-  negate      = tMul (-1)
+  negate x    = (-1) |*| x
 
   abs x
     | Just k <- isConst x   = fromInteger (abs k)
@@ -58,7 +59,7 @@ instance PP Term where
 -- | Replace a variable with a term.
 tLet :: Name -> Term -> Term -> Term
 tLet x t1 t2 = let (a,t) = tSplitVar x t2
-               in tMul a t1 + t
+               in a |*| t1 + t
 
 tLetNum :: Name -> Integer -> Term -> Term
 tLetNum x k t = let (c,T n m) = tSplitVar x t
@@ -67,10 +68,12 @@ tLetNum x k t = let (c,T n m) = tSplitVar x t
 tVar :: Name -> Term
 tVar x = T 0 (Map.singleton x 1)
 
-tMul :: Integer -> Term -> Term
-tMul 0 _        = fromInteger 0
-tMul 1 t        = t
-tMul k (T n m)  = T (k * n) (fmap (k *) m)
+infixr 7 |*|
+
+(|*|) :: Integer -> Term -> Term
+0 |*| _     = fromInteger 0
+1 |*| t     = t
+k |*| T n m = T (k * n) (fmap (k *) m)
 
 tDrop :: Name -> Term -> Term
 tDrop x (T n m) = T n (Map.delete x m)

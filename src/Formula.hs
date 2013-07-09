@@ -5,7 +5,7 @@ module Formula
   , (|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|)
 
   , Term
-  , Name, tVar, tMul
+  , Name, tVar, (|*|)
 
   , checkSat
   ) where
@@ -21,26 +21,31 @@ infixr 2 \/
 infixr 3 /\
 infix  4 |==|, |/=|, |<|, |<=|, |>|, |>=|
 
-
+-- | First-order formulas without quantifiers.
 data Formula  = Fo Skeleton (JList Atom)
 data Skeleton = And Skeleton Skeleton | Or Skeleton Skeleton | Prim
 
-
+-- | A true statement.
 true :: Formula
 true = Fo Prim (One (Bool True))
 
+-- | A false statement.
 false :: Formula
 false = Fo Prim (One (Bool False))
 
+-- | Conjunction.
 (/\) :: Formula -> Formula -> Formula
 Fo s1 as1 /\ Fo s2 as2 = Fo (And s1 s2) (Two as1 as2)
 
+-- | Disjunction.
 (\/) :: Formula -> Formula -> Formula
 Fo s1 as1 \/ Fo s2 as2 = Fo (Or s1 s2) (Two as1 as2)
 
+-- | Implication.
 (==>) :: Formula -> Formula -> Formula
 p ==> q = neg p \/ q
 
+-- | Negation.
 neg :: Formula -> Formula
 neg (Fo s as) = Fo (negS s) (fmap negA as)
   where
@@ -58,12 +63,28 @@ neg (Fo s as) = Fo (negS s) (fmap negA as)
                     Gt  -> Leq
                     Geq -> Lt
 
-(|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|) :: Term -> Term -> Formula
+-- | Assert that terms are the same.
+(|==|) :: Term -> Term -> Formula
 t1 |==| t2 = atom Eq  t1 t2
+
+-- | Assert that terms are different.
+(|/=|) :: Term -> Term -> Formula
 t1 |/=| t2 = atom Neq t1 t2
+
+-- | Assert that the first term is strictly smaller.
+(|<|) :: Term -> Term -> Formula
 t1 |<|  t2 = atom Lt  t1 t2
+
+-- | Assert that the first term is smaller than or equal to the second one.
+(|<=|) :: Term -> Term -> Formula
 t1 |<=| t2 = atom Leq t1 t2
+
+-- | Assert that the first term is strictly greater than the second.
+(|>|) :: Term -> Term -> Formula
 t1 |>|  t2 = atom Gt  t1 t2
+
+-- | Assert that the first term is greater than or equal to the second.
+(|>=|) :: Term -> Term -> Formula
 t1 |>=| t2 = atom Geq t1 t2
 
 atom :: Op -> Term -> Term -> Formula
@@ -81,6 +102,9 @@ assign s bs0 = go s bs0
   go _ _                     = error "shape mismatch in `assign`"
 
 
+-- | Check if the formula is satisfiable, which means that there are
+-- integers that can be assigned to the free varaibles so that
+-- the statement becomes true.
 checkSat :: Formula -> Bool
 checkSat (Fo (Or f1 f2) (Two as1 as2)) = checkSat (Fo f1 as1) ||
                                          checkSat (Fo f2 as2)
