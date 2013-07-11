@@ -1,12 +1,9 @@
--- {-# LANGUAGE Safe #-}
-{-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE Safe #-}
 {-# LANGUAGE BangPatterns #-}
 module Data.Integer.Presburger.Div (Solution, DivCt, solve, instTerm) where
 
 import Data.Integer.Presburger.Term
 import Data.List(partition)
-
-import Debug.Trace
 
 {- | The extended Euclid's algorithm.
 It computes the GCD of two numbres as a linear combination of the inputs.

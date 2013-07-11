@@ -1,6 +1,5 @@
--- {-# LANGUAGE Safe #-}
-{-# LANGUAGE Trustworthy #-}
-module Data.Integer.Presburger.Formula
+{-# LANGUAGE Safe #-}
+module Data.Integer.Presburger
   ( Formula
   , true, false, (/\), (\/), (==>), neg, ite
   , (|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|)
@@ -11,16 +10,11 @@ module Data.Integer.Presburger.Formula
   , checkSat, prove
   ) where
 
-import Debug.Trace
-
 import qualified Data.Integer.Presburger.Term as T
-import           Data.Integer.Presburger.Term (PP(..),pp)
 import           Data.Integer.Presburger.Atom
 import           Data.Integer.Presburger.JList1
 import           Data.IntSet (IntSet)
 import qualified Data.IntSet as Set
-
-import           Text.PrettyPrint
 
 
 infixr 1 ==>
@@ -52,6 +46,7 @@ norm (Fo s j) = step s j
   step (And s1 s2) (Two as1 as2) = ffAnd (step s1 as1) (step s2 as2)
   step (Or s1 s2)  (Two as1 as2) = ffOr  (step s1 as1) (step s2 as2)
   step Prim        (One a)       = FFAtom a
+  step _           _             = error "Malformed formula"
 
   ffAnd (FFAnd xs) (FFAnd ys) = FFAnd (xs ++ ys)
   ffAnd x y                   = FFAnd [x,y]
@@ -178,22 +173,9 @@ checkSat (Fo (Or f1 f2) (Two as1 as2)) = checkSat (Fo f1 as1) ||
                                          checkSat (Fo f2 as2)
 checkSat (Fo s as) =
   let vs = fold Set.union $ fmap aVars as
-      fs = {-zipWith trace (map show [ 0 .. ]) $-} exists (Set.toList vs) (F [] as [])
+      fs = exists (Set.toList vs) (F [] as [])
       ss = concatMap check fs
-  -- in seq (count 0 fs) undefined -- trace (show $ length fs) undefined -- $ or [ assign s su | su <- ss ]
   in any (assign s) ss
-
-  where
-
-  step = 1000
-  count _ []   = []
-  count tot xs = let (as,bs) = splitAt step xs
-                 in let tot1 = tot + case bs of
-                                       [] -> length as
-                                       _  -> step
-                    in trace (show tot1) $ count tot1 bs
-
-
 
 -- | Check if a formula is valid, which means that it is true no matter
 -- what integers we choose for the free variables.

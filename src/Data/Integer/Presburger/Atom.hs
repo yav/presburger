@@ -1,10 +1,6 @@
--- {-# LANGUAGE Safe #-}
-{-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE Safe #-}
 {-# LANGUAGE BangPatterns #-}
 module Data.Integer.Presburger.Atom where
-
-import Debug.Trace
-import Data.List(nub)
 
 import Data.Integer.Presburger.Term
 import Data.Integer.Presburger.Div as Div
@@ -81,10 +77,7 @@ aCts x as ds =
   let mbCts = fmap (aCt x c) as
       mbDs  = map (aDivCt x c) ds
       cs    = map fst (rights mbDs) ++ map fst (rights $ toList mbCts)
-      c     = case cs of
-                 []  -> 1
-                 [x] -> abs x
-                 _   -> foldr1 lcm cs
+      c     = foldr lcm 1 cs
   in (c, mapRight snd mbCts, mapRight snd mbDs)
   where
   mapRight f = fmap (either Left (Right . f))
@@ -93,7 +86,7 @@ aCts x as ds =
 getBounds :: [Ct] -> Either [Term] [Term]
 getBounds = go (0::Int) [] []
   where
-  go !d !ls !us (Atom op lhs rhs : more) =
+  go !d !ls !us (Atom op _ rhs : more) =
     case op of
       Lt  -> go (d+1) ls             (rhs : us)     more
       Gt  -> go (d-1) (rhs : ls)     us             more
@@ -162,7 +155,6 @@ upperBoundedDivCt x b (m,t) = (m, tLet x (b - tVar x) t)
 
 ex :: Name -> F -> [F]
 ex x fo@(F ds as cs) =
-  -- trace ("ex: " ++ show x) $
   let (c, as1, cs1) = aCts x as cs
       trivial       = all isLeft (toList as1) && all isLeft cs1
 
@@ -182,17 +174,14 @@ ex x fo@(F ds as cs) =
   in if trivial
      then [fo]
      else case getBounds (rights (toList as1)) of
-            Left bs  -> negF : msg (map lBound bs)
-            Right bs -> posF : msg (map uBound bs)
+            Left bs  -> negF : map lBound bs
+            Right bs -> posF : map uBound bs
 
   where
   fromRight f = fmap (either id f)
 
   isLeft (Left _) = True
   isLeft _        = False
-
-  msg bs = bs -- trace ("expands " ++ show (length bs) ++ " ways.") bs
-
 
 exists :: [Name] -> F -> [F]
 exists ns = go ns
@@ -202,10 +191,8 @@ exists ns = go ns
 
 
 check :: F -> [JList Bool]
-check (F ds as cs) = {-trace "checking" $-} go [] solns
+check (F ds as cs) = go [] (Div.solve ds cs)
   where
-  solns = [ {-trace ("sln " ++ show n)-} s | (n,s) <- zip [0.. ] (Div.solve ds cs) ]
-
   go x (su : sus) = fmap (evalAtom su) as : go x sus
   go _ []         = []
 {-
