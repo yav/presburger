@@ -187,3 +187,9 @@ aVars (Bool _)         = Set.empty
 aVars (Atom _ lhs rhs) = Set.union (T.tVars lhs) (T.tVars rhs)
 
 
+_example :: [F]
+_example = exists [0,1] (F [] as [])
+  where x : y : _ = map tVar [ 0 .. ]
+        Fo _ as = x + 5 * y |>| 1     /\
+                  13 * x - y |>| 1    /\
+                  x + 2 |<| 0

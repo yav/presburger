@@ -243,7 +243,4 @@ addSoln new (cur : more) =
     Just GT -> addSoln new more
 
 
-{-
-test = exists ["x","y"] $ F [] [ "x" + 5 * "y" |>| 1, 13 * "x" - "y" |>| 1, "x" + 2 |<| 0 ] []
--}
 
