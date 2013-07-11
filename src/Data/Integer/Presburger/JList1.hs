@@ -1,5 +1,5 @@
 {-# LANGUAGE Safe #-}
-module JList1 where
+module Data.Integer.Presburger.JList1 where
 
 data JList a = One a | Two (JList a) (JList a)
                 deriving Show
@@ -12,7 +12,6 @@ toList :: JList a -> [a]
 toList xs = go xs []
   where go (One a) as     = a : as
         go (Two as bs) cs = go as (go bs cs)
-
 
 fold :: (a -> a -> a) -> JList a -> a
 fold _ (One x)      = x

@@ -1,5 +1,5 @@
 Name:           presburger
-Version:        0.4
+Version:        1.0
 License:        BSD3
 License-file:   LICENSE
 Author:         Iavor S. Diatchki
@@ -15,16 +15,12 @@ library
   Build-Depends:  base < 10, containers, pretty
   hs-source-dirs: src
   Exposed-modules:
-    Data.Integer.Presburger
-    Data.Integer.OldPresburger
+    Data.Integer.Presburger.Formula
+  Other-modules:
     Data.Integer.Presburger.Term
-    Data.Integer.Presburger.Prop
-    Data.Integer.Presburger.Form
-    Data.Integer.Presburger.SolveDiv
-    Data.Integer.Presburger.Notation
-    Data.Integer.Presburger.HOAS
-    Data.Integer.Presburger.ModArith
-    Data.Integer.Presburger.Utils
+    Data.Integer.Presburger.Atom
+    Data.Integer.Presburger.Div
+    Data.Integer.Presburger.JList1
 
   GHC-options:    -O2 -Wall
 

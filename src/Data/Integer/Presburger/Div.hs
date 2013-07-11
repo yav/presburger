@@ -1,14 +1,21 @@
+-- {-# LANGUAGE Safe #-}
+{-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE BangPatterns #-}
-module GCD (Solution, DivCt, solve, instTerm) where
+module Data.Integer.Presburger.Div (Solution, DivCt, solve, instTerm) where
 
-import Term
+import Data.Integer.Presburger.Term
+import Data.List(partition)
+
+import Debug.Trace
 
 {- | The extended Euclid's algorithm.
 It computes the GCD of two numbres as a linear combination of the inputs.
 If @gcd a b = (d, s, t)@, then @d@ is the GCD of a and b,
 and @d = s * a + t * b@. -}
 gcdE :: Integer -> Integer -> (Integer, Integer, Integer)
-gcdE = go 1 0 0 1
+gcdE u v = let (d,p,q) = go 1 0 0 1 (abs u) (abs v)
+           in (d, signum u * p, signum v * q)
+
   where
   go !s2 !s1 !t2 !t1 !a !b
     | b == 0      = (a, s2, t2)
@@ -28,23 +35,31 @@ type DivCt = (Integer, Term)
 {- | Given a bunch of upper bounds on some variables, and a collection
 of divisibilty constraints, compute the possible values for the variables.
 We are only interested in values between 1 and the upper bound (inclusive). -}
-solve :: [(Name,Integer)] -> [DivCt] -> [ Solution ]
-solve vs [] = go vs
+
+solve :: [(Int, Integer)] -> [(Integer, Term)] -> [[(Int, Integer)]]
+solve xs cs = solve' xs cs
+
+
+solve' :: [(Name, Integer)] -> [DivCt] -> [[(Name, Integer)]]
+solve' vs [] = go vs
   where
   go ((x,u) : rest) = [ (x,v) : su | su <- go rest, v <- [ 1 .. u ] ]
   go []             = [ [] ]
 
-solve [] cs
+solve' [] cs
   | all ok cs = [ [] ]
   | otherwise = []
   where
   ok (m,t) = let Just b = isConst t
              in mod b m == 0
 
-solve ((x,u) : vars) cs =
-  [ (x,v) : su | su <- solve vars rest, v <- soln su ]
+solve' ((x,u) : vars) cs =
+  [ (x,v) : su | su <- solve' vars rest, v <- soln su ]
   where
-  ((m,t),rest) = joinCts x cs
+  (cs_this, cs_more) = partition ((/= 0) . tCoeff x . snd) cs
+  ((m,t),rest0) = joinCts x cs_this
+
+  rest = cs_more ++ rest0
 
   soln su =
     let (a,t1) = tSplitVar x (instTerm su t)
@@ -97,6 +112,7 @@ until we exceed the upper bound.
 -}
 solveDiv :: Integer -> Integer -> Integer -> Integer -> [Integer]
 solveDiv u m a b
+  | d == 0    = error ("SOLVEDIV 0: " ++ show (m,a,b))
   | r1 == 0   = takeWhile (<= u) $ iterate (step +) $ t0 * step - extra
   | otherwise = []
   where

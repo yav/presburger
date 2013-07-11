@@ -1,14 +1,19 @@
-{-# LANGUAGE RecordWildCards, BangPatterns #-}
-module Atom where
+-- {-# LANGUAGE Safe #-}
+{-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE BangPatterns #-}
+module Data.Integer.Presburger.Atom where
 
-import Term
-import GCD
-import JList1
+import Debug.Trace
+import Data.List(nub)
+
+import Data.Integer.Presburger.Term
+import Data.Integer.Presburger.Div as Div
+import Data.Integer.Presburger.JList1
 import Text.PrettyPrint
 import Data.Either(rights)
 
 
-data Atom   = Atom { aOp :: !Op, aLhs :: Term, aRhs :: Term }
+data Atom   = Atom !Op Term Term
             | Bool Bool
 
 data Op     = Eq | Neq | Lt | Leq | Gt | Geq
@@ -23,8 +28,9 @@ instance Show Atom where
   showsPrec p a cs = show (ppPrec p a) ++ cs
 
 instance PP Atom where
-  ppPrec _ Atom { .. } = pp aLhs <+> text o <+> pp aRhs
-    where o = case aOp of
+  ppPrec _ (Atom op lhs rhs) = char '"' <>
+                                pp lhs <+> text o <+> pp rhs <> char '"'
+    where o = case op of
                 Lt  -> "<"
                 Leq -> "<="
                 Gt  -> ">"
@@ -32,31 +38,28 @@ instance PP Atom where
                 Eq  -> "=="
                 Neq -> "/="
 
-  ppPrec _ (Bool x) = text $ if x then "True" else "False"
+  ppPrec _ (Bool x) = text (if x then "True" else "False")
 
 type Ct = Atom
 
 aCt :: Name -> Integer -> Atom -> Either Atom (Integer, Ct)
-aCt x c Atom { .. }
-  | lC /= 0 = Right ( lC
-                   , Atom { aLhs = tVar x
-                          , aRhs = div c lC |*| (aRhs - lRest)
-                          , .. })
+aCt x c (Atom op lhs rhs)
+  | lC /= 0 = Right ( lC, Atom op (tVar x) (div c lC |*| (rhs - lRest)) )
   where
-  (lC, lRest) = tSplitVar x aLhs
-aCt x c Atom { .. }
-  | rC /= 0 = Right ( rC
-                   , Atom { aLhs = tVar x
-                          , aRhs = div c rC |*| (aLhs - rRest)
-                          , aOp  = case aOp of
-                                     Lt  -> Gt
-                                     Leq -> Geq
-                                     Gt  -> Lt
-                                     Geq -> Leq
-                                     Eq  -> Eq
-                                     Neq -> Neq })
+  (lC, lRest) = tSplitVar x lhs
+
+aCt x c (Atom op lhs rhs)
+  | rC /= 0 = Right ( rC, Atom newOp (tVar x) (div c rC |*| (lhs - rRest)) )
   where
-  (rC, rRest) = tSplitVar x aRhs
+  (rC, rRest) = tSplitVar x rhs
+  newOp = case op of
+            Lt  -> Gt
+            Leq -> Geq
+            Gt  -> Lt
+            Geq -> Leq
+            Eq  -> Eq
+            Neq -> Neq
+
 
 aCt _ _ a = Left a
 
@@ -78,7 +81,10 @@ aCts x as ds =
   let mbCts = fmap (aCt x c) as
       mbDs  = map (aDivCt x c) ds
       cs    = map fst (rights mbDs) ++ map fst (rights $ toList mbCts)
-      c     = if null cs then 1 else foldr1 lcm cs
+      c     = case cs of
+                 []  -> 1
+                 [x] -> abs x
+                 _   -> foldr1 lcm cs
   in (c, mapRight snd mbCts, mapRight snd mbDs)
   where
   mapRight f = fmap (either Left (Right . f))
@@ -87,14 +93,14 @@ aCts x as ds =
 getBounds :: [Ct] -> Either [Term] [Term]
 getBounds = go (0::Int) [] []
   where
-  go !d !ls !us (Atom { .. } : more) =
-    case aOp of
-      Lt  -> go (d+1) ls              (aRhs : us)     more
-      Gt  -> go (d-1) (aRhs : ls)     us              more
-      Leq -> go (d+1) ls              (aRhs + 1 : us) more
-      Geq -> go (d-1) (aRhs - 1 : ls) us              more
-      Eq  -> go d     (aRhs - 1 : ls) (aRhs + 1 : us) more
-      Neq -> go d     (aRhs : ls)     (aRhs : us)     more
+  go !d !ls !us (Atom op lhs rhs : more) =
+    case op of
+      Lt  -> go (d+1) ls             (rhs : us)     more
+      Gt  -> go (d-1) (rhs : ls)     us             more
+      Leq -> go (d+1) ls             (rhs + 1 : us) more
+      Geq -> go (d-1) (rhs - 1 : ls) us             more
+      Eq  -> go d     (rhs - 1 : ls) (rhs + 1 : us) more
+      Neq -> go d     (rhs : ls)     (rhs : us)     more
 
   go d ls us (Bool _ : more) = go d ls us more
   go d ls us []              = if d >= 0 then Left ls else Right us
@@ -102,14 +108,14 @@ getBounds = go (0::Int) [] []
 
 -- | Value of constraint as variable get arbitrarily small.
 negInfAtom :: Ct -> Atom
-negInfAtom a@(Bool _)  = a
-negInfAtom Atom { .. } = Bool $ case aOp of
-                                  Eq  -> False
-                                  Neq -> True
-                                  Lt  -> True
-                                  Leq -> True
-                                  Gt  -> False
-                                  Geq -> False
+negInfAtom a@(Bool _)    = a
+negInfAtom (Atom op _ _) = Bool $ case op of
+                                    Eq  -> False
+                                    Neq -> True
+                                    Lt  -> True
+                                    Leq -> True
+                                    Gt  -> False
+                                    Geq -> False
 
 -- x |-> x
 negInfDiv :: DivCt -> DivCt
@@ -117,8 +123,8 @@ negInfDiv = id
 
 -- x |-> x + b
 lowerBoundedAtom :: Term -> Ct -> Atom
-lowerBoundedAtom b Atom { .. } = Atom { aLhs = newLhs, aRhs = newRhs, .. }
-  where (newLhs,newRhs) = tSplit (aRhs - b - aLhs)
+lowerBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b - lhs)
 lowerBoundedAtom _ (Bool _) = error "lowerBoundedAtom on Bool"
 
 -- x |-> x + b
@@ -128,13 +134,13 @@ lowerBoundedDivCt b (m,t) = (m, t + b)
 -- | Value of constraint as variable gets arbitrarily large
 posInfAtom :: Ct -> Atom
 posInfAtom a@(Bool _)  = a
-posInfAtom Atom { .. } = Bool $ case aOp of
-                                  Eq  -> False
-                                  Neq -> True
-                                  Lt  -> False
-                                  Leq -> False
-                                  Gt  -> True
-                                  Geq -> True
+posInfAtom (Atom op _ _) = Bool $ case op of
+                                    Eq  -> False
+                                    Neq -> True
+                                    Lt  -> False
+                                    Leq -> False
+                                    Gt  -> True
+                                    Geq -> True
 
 -- x |-> -x
 posInfDiv :: Name -> DivCt -> DivCt
@@ -143,8 +149,8 @@ posInfDiv x (m,t) = (m, tLet x (negate (tVar x)) t)
 
 -- x |-> b - x
 upperBoundedAtom :: Term -> Ct -> Atom
-upperBoundedAtom b Atom { .. } = Atom { aLhs = newLhs, aRhs = newRhs, .. }
-  where (newLhs,newRhs) = tSplit (aRhs - b + aLhs)
+upperBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b + lhs)
 upperBoundedAtom _ (Bool _) = error "upperBoundedAtom on Bool"
 
 -- x |-> b - x
@@ -155,12 +161,14 @@ upperBoundedDivCt x b (m,t) = (m, tLet x (b - tVar x) t)
 
 
 ex :: Name -> F -> [F]
-ex x (F ds as cs) =
+ex x fo@(F ds as cs) =
+  -- trace ("ex: " ++ show x) $
   let (c, as1, cs1) = aCts x as cs
+      trivial       = all isLeft (toList as1) && all isLeft cs1
+
       ms            = c : map fst (rights cs1)
       d             = foldr1 lcm ms
 
-      algCts        = rights $ toList as1
       newDs         = (x,d) : ds
       newCs         = Right (c, tVar x) : cs1
 
@@ -171,39 +179,55 @@ ex x (F ds as cs) =
       posF          = mkF posInfAtom (posInfDiv x)
       uBound b      = mkF (upperBoundedAtom b) (upperBoundedDivCt x b)
 
-  in case getBounds algCts of
-       Left bs  -> negF : map lBound bs
-       Right bs -> posF : map uBound bs
+  in if trivial
+     then [fo]
+     else case getBounds (rights (toList as1)) of
+            Left bs  -> negF : msg (map lBound bs)
+            Right bs -> posF : msg (map uBound bs)
 
   where
   fromRight f = fmap (either id f)
 
+  isLeft (Left _) = True
+  isLeft _        = False
+
+  msg bs = bs -- trace ("expands " ++ show (length bs) ++ " ways.") bs
+
+
 exists :: [Name] -> F -> [F]
-exists (x : xs) f = concatMap (exists xs) (ex x f)
-exists [] f       = [f]
+exists ns = go ns
+  where
+  go (x : xs) f = [ r | f1 <- go xs f, r <- ex x f1 ]
+  go [] f = [f]
 
 
 check :: F -> [JList Bool]
-check (F ds as cs) = go [] (GCD.solve ds cs)
+check (F ds as cs) = {-trace "checking" $-} go [] solns
   where
+  solns = [ {-trace ("sln " ++ show n)-} s | (n,s) <- zip [0.. ] (Div.solve ds cs) ]
+
+  go x (su : sus) = fmap (evalAtom su) as : go x sus
+  go _ []         = []
+{-
   go solns [] = solns
   go solns (su : sus) =
     let new = fmap (evalAtom su) as
     in if isTop new then [new] else go (addSoln new solns) sus
+-}
 
-  evalTerm su t = case isConst (GCD.instTerm su t) of
+  evalTerm su t = case isConst (Div.instTerm su t) of
                     Just n  -> n
                     Nothing -> error "Unbound free variable."
 
   evalAtom _ (Bool b) = b
-  evalAtom su Atom { .. } =
-    case aOp of
-      Lt  -> evalTerm su aLhs <  evalTerm su aRhs
-      Leq -> evalTerm su aLhs <= evalTerm su aRhs
-      Gt  -> evalTerm su aLhs >  evalTerm su aRhs
-      Geq -> evalTerm su aLhs >= evalTerm su aRhs
-      Eq  -> evalTerm su aLhs == evalTerm su aRhs
-      Neq -> evalTerm su aLhs /= evalTerm su aRhs
+  evalAtom su (Atom op lhs rhs) =
+    case op of
+      Lt  -> evalTerm su lhs <  evalTerm su rhs
+      Leq -> evalTerm su lhs <= evalTerm su rhs
+      Gt  -> evalTerm su lhs >  evalTerm su rhs
+      Geq -> evalTerm su lhs >= evalTerm su rhs
+      Eq  -> evalTerm su lhs == evalTerm su rhs
+      Neq -> evalTerm su lhs /= evalTerm su rhs
 
 isTop :: JList Bool -> Bool
 isTop (One x)     = x

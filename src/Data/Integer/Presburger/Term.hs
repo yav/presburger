@@ -1,4 +1,5 @@
-module Term where
+{-# LANGUAGE Safe, PatternGuards #-}
+module Data.Integer.Presburger.Term where
 
 import qualified Data.IntMap as Map
 import           Data.IntMap (IntMap)
@@ -54,7 +55,7 @@ instance PP Term where
                  | otherwise  = text "-" <+> ppMul (abs n) x
 
     ppMul n x = integer n <+> text "*" <+> ppVar x
-    ppVar     = int
+    ppVar n   = text ("a" ++ show n)
 
 -- | Replace a variable with a term.
 tLet :: Name -> Term -> Term -> Term
