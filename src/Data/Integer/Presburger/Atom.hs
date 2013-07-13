@@ -77,21 +77,26 @@ aDivCt x c (m,t)
 aDivCt _ _ d = Left d
 
 
-
-
+-- | Normalize a formula with respect to a particular variable.
+-- In the resulting formula, the variable has coefficient 1
+-- Example: @2x > 5 --> x > 10@
 aCts :: Name -> JList Atom -> [DivCt] ->
               (Integer, JList (Either Atom Ct), [Either DivCt DivCt])
 aCts x as ds =
   let mbCts = fmap (aCt x c) as
       mbDs  = map (aDivCt x c) ds
-      c     = fold lcm' mbCts $ foldr lcm' 1 mbDs
+      c     = fold lcm' mbCts (foldr lcm' 1 mbDs)
 
   in (c, mapRight snd mbCts, mapRight snd mbDs)
   where
   mapRight f               = fmap (either Left (Right . f))
 
-  lcm' (Right (coeff,_)) l = lcm coeff l
-  lcm' (Left _)          l = l
+-- A variation on `lcm` to match the shape of inputs we work with.
+lcm' :: Either a (Integer,b) -> Integer -> Integer
+lcm' (Right (coeff,_)) l = lcm coeff l
+lcm' (Left _)          l = l
+
+
 
 -- Left: there were fewer lower bounds, Right: fewer upper bounds
 getBounds :: [Ct] -> Either [Term] [Term]
@@ -122,18 +127,24 @@ negInfAtom (Atom op _ _) = Bool $ case op of
                                     Geq -> False
 
 -- x |-> x
-negInfDiv :: DivCt -> DivCt
-negInfDiv = id
+negInfDiv :: Bool -> Name -> DivCt -> DivCt
+negInfDiv False _ ct   = ct
+negInfDiv True x (m,t) = (m, tLet x 1 t)
 
 -- x |-> x + b
-lowerBoundedAtom :: Term -> Ct -> Atom
-lowerBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b - lhs)
-lowerBoundedAtom _ (Bool _) = error "lowerBoundedAtom on Bool"
+lowerBoundedAtom :: Bool -> Term -> Ct -> Atom
+lowerBoundedAtom o b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b - var)
+        var = if o then 1 else lhs
+lowerBoundedAtom _ _ (Bool _) = error "lowerBoundedAtom on Bool"
 
 -- x |-> x + b
-lowerBoundedDivCt :: Term -> DivCt -> DivCt
-lowerBoundedDivCt b (m,t) = (m, t + b)
+lowerBoundedDivCt :: Bool -> Name -> Term -> DivCt -> DivCt
+lowerBoundedDivCt o x b (m,t) = (m, t' + b)
+  where t' = if o then tLet x 1 t else t
+
+
+
 
 -- | Value of constraint as variable gets arbitrarily large
 posInfAtom :: Ct -> Atom
@@ -147,40 +158,47 @@ posInfAtom (Atom op _ _) = Bool $ case op of
                                     Geq -> True
 
 -- x |-> -x
-posInfDiv :: Name -> DivCt -> DivCt
-posInfDiv x (m,t) = (m, tLet x (negate (tVar x)) t)
+posInfDiv :: Bool -> Name -> DivCt -> DivCt
+posInfDiv o x (m,t) = (m, tLet x (negate var) t)
+  where var = if o then 1 else tVar x
 
 
 -- x |-> b - x
-upperBoundedAtom :: Term -> Ct -> Atom
-upperBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b + lhs)
-upperBoundedAtom _ (Bool _) = error "upperBoundedAtom on Bool"
+upperBoundedAtom :: Bool -> Term -> Ct -> Atom
+upperBoundedAtom o b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b + var)
+        var = if o then 1 else lhs
+upperBoundedAtom _ _ (Bool _) = error "upperBoundedAtom on Bool"
 
 -- x |-> b - x
-upperBoundedDivCt :: Name -> Term -> DivCt -> DivCt
-upperBoundedDivCt x b (m,t) = (m, tLet x (b - tVar x) t)
+upperBoundedDivCt :: Bool -> Name -> Term -> DivCt -> DivCt
+upperBoundedDivCt o x b (m,t) = (m, tLet x (b - var) t)
+  where var = if o then 1 else tVar x
 
 
 
-
+-- | Eliminate an existentially quantified variable.
 ex :: Name -> F -> [F]
 ex x fo@(F ds as cs) =
   let (c, as1, cs1) = aCts x as cs
-      trivial       = all isLeft (toList as1) && all isLeft cs1
+      trivial       = fold (\e m -> isLeft e && m) as1 (all isLeft cs1)
 
-      ms            = c : map fst (rights cs1)
-      d             = foldr1 lcm ms
+      -- add new divisibilty constraint, unless boring.
+      newCs         = if c == 1 then cs1 else Right (c, tVar x) : cs1
+      delta         = foldr lcm' 1 newCs
+      justOne       = delta == 1
 
-      newDs         = (x,d) : ds
-      newCs         = Right (c, tVar x) : cs1
+
+      newDs         = if justOne then ds else (x,delta) : ds
 
       mkF af cf     = F newDs (fromRight af as1) (fromRight cf newCs)
 
-      negF          = mkF negInfAtom negInfDiv
-      lBound b      = mkF (lowerBoundedAtom b) (lowerBoundedDivCt b)
-      posF          = mkF posInfAtom (posInfDiv x)
-      uBound b      = mkF (upperBoundedAtom b) (upperBoundedDivCt x b)
+      negF          = mkF negInfAtom (negInfDiv justOne x)
+      lBound b      = mkF (lowerBoundedAtom justOne b)
+                          (lowerBoundedDivCt justOne x b)
+      posF          = mkF posInfAtom (posInfDiv justOne x)
+      uBound b      = mkF (upperBoundedAtom justOne b)
+                          (upperBoundedDivCt justOne x b)
 
   in if trivial
      then [fo]
