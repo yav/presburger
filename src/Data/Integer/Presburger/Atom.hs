@@ -38,7 +38,14 @@ instance PP Atom where
 
 type Ct = Atom
 
-aCt :: Name -> Integer -> Atom -> Either Atom (Integer, Ct)
+{- | Transform atom so that variable is on the LHS with coefficient 1.
+If the variable is not mentioned in the atom, then it is left unchanged,
+and tagged with @Left@. Otherwise, we return the variable's current
+coefficient and the normalized constraint. -}
+aCt :: Name    ->   -- ^ Variable.
+       Integer ->   -- ^ LCM of all coefficients for the variable (LAZY).
+       Atom    ->   -- ^ Constraint to be normalizied.
+       Either Atom (Integer, Ct)
 aCt x c (Atom op lhs rhs)
   | lC /= 0 = Right ( lC, Atom op (tVar x) (div c lC |*| (rhs - lRest)) )
   where
@@ -59,6 +66,8 @@ aCt x c (Atom op lhs rhs)
 
 aCt _ _ a = Left a
 
+-- | Normalize a divisibility constraint, so that coefficient
+-- of the variable is 1.
 aDivCt :: Name -> Integer -> DivCt -> Either DivCt (Integer, DivCt)
 aDivCt x c (m,t)
   | coeff /= 0  = let sc = div c coeff
@@ -70,17 +79,19 @@ aDivCt _ _ d = Left d
 
 
 
-
 aCts :: Name -> JList Atom -> [DivCt] ->
               (Integer, JList (Either Atom Ct), [Either DivCt DivCt])
 aCts x as ds =
   let mbCts = fmap (aCt x c) as
       mbDs  = map (aDivCt x c) ds
-      cs    = map fst (rights mbDs) ++ map fst (rights $ toList mbCts)
-      c     = foldr lcm 1 cs
+      c     = fold lcm' mbCts $ foldr lcm' 1 mbDs
+
   in (c, mapRight snd mbCts, mapRight snd mbDs)
   where
-  mapRight f = fmap (either Left (Right . f))
+  mapRight f               = fmap (either Left (Right . f))
+
+  lcm' (Right (coeff,_)) l = lcm coeff l
+  lcm' (Left _)          l = l
 
 -- Left: there were fewer lower bounds, Right: fewer upper bounds
 getBounds :: [Ct] -> Either [Term] [Term]

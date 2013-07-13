@@ -172,7 +172,7 @@ checkSat :: Formula -> Bool
 checkSat (Fo (Or f1 f2) (Two as1 as2)) = checkSat (Fo f1 as1) ||
                                          checkSat (Fo f2 as2)
 checkSat (Fo s as) =
-  let vs = fold Set.union $ fmap aVars as
+  let vs = fold Set.union (fmap aVars as) Set.empty
       fs = exists (Set.toList vs) (F [] as [])
       ss = concatMap check fs
   in any (assign s) ss

@@ -9,10 +9,8 @@ instance Functor JList where
   fmap f (Two xs ys)  = Two (fmap f xs) (fmap f ys)
 
 toList :: JList a -> [a]
-toList xs = go xs []
-  where go (One a) as     = a : as
-        go (Two as bs) cs = go as (go bs cs)
+toList xs = fold (:) xs []
 
-fold :: (a -> a -> a) -> JList a -> a
-fold _ (One x)      = x
-fold f (Two xs ys)  = f (fold f xs) (fold f ys)
+fold :: (a -> b -> b) -> JList a -> b -> b
+fold f (One x) r     = f x r
+fold f (Two xs ys) r = fold f xs (fold f ys r)
