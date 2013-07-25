@@ -9,16 +9,17 @@ import Text.PrettyPrint
 import Data.Either(rights)
 
 
+
 data Atom   = Atom !Op Term Term
+            | Div Integer Term
             | Bool Bool
+              deriving Eq
 
 data Op     = Eq | Neq | Lt | Leq | Gt | Geq
+              deriving Eq
 
 data F      = F [(Name,Integer)] (JList Atom) [DivCt]
                 deriving Show
-
-
-
 
 instance Show Atom where
   showsPrec p a cs = show (ppPrec p a) ++ cs
@@ -35,6 +36,8 @@ instance PP Atom where
                 Neq -> "/="
 
   ppPrec _ (Bool x) = text (if x then "True" else "False")
+
+  ppPrec _ (Div x t) = char '"' <> integer x <+> text "|" <+> pp t <> char '"'
 
 type Ct = Atom
 
@@ -63,6 +66,10 @@ aCt x c (Atom op lhs rhs)
             Eq  -> Eq
             Neq -> Neq
 
+aCt x c (Div m t)
+  | coeff /= 0  = let sc = div c coeff
+                  in Right (coeff, Div (abs (m * sc)) (tVar x + sc |*| rest))
+  where (coeff,rest) = tSplitVar x t
 
 aCt _ _ a = Left a
 
@@ -97,7 +104,6 @@ lcm' (Right (coeff,_)) l = lcm coeff l
 lcm' (Left _)          l = l
 
 
-
 -- Left: there were fewer lower bounds, Right: fewer upper bounds
 getBounds :: [Ct] -> Either [Term] [Term]
 getBounds = go (0::Int) [] []
@@ -112,10 +118,11 @@ getBounds = go (0::Int) [] []
       Neq -> go d     (rhs : ls)     (rhs : us)     more
 
   go d ls us (Bool _ : more) = go d ls us more
+  go d ls us (Div {} : more) = go d ls us more
   go d ls us []              = if d >= 0 then Left ls else Right us
 
 
--- | Value of constraint as variable get arbitrarily small.
+-- | Value of constraint as variable gets arbitrarily small.
 negInfAtom :: Ct -> Atom
 negInfAtom a@(Bool _)    = a
 negInfAtom (Atom op _ _) = Bool $ case op of
@@ -125,55 +132,59 @@ negInfAtom (Atom op _ _) = Bool $ case op of
                                     Leq -> True
                                     Gt  -> False
                                     Geq -> False
-
--- x |-> x
-negInfDiv :: Bool -> Name -> DivCt -> DivCt
-negInfDiv False _ ct   = ct
-negInfDiv True x (m,t) = (m, tLet x 1 t)
+negInfAtom a@(Div _ _)   = a
 
 -- x |-> x + b
-lowerBoundedAtom :: Bool -> Term -> Ct -> Atom
-lowerBoundedAtom o b (Atom op lhs rhs) = Atom op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b - var)
-        var = if o then 1 else lhs
-lowerBoundedAtom _ _ (Bool _) = error "lowerBoundedAtom on Bool"
-
--- x |-> x + b
-lowerBoundedDivCt :: Bool -> Name -> Term -> DivCt -> DivCt
-lowerBoundedDivCt o x b (m,t) = (m, t' + b)
-  where t' = if o then tLet x 1 t else t
+lowerBoundedAtom :: Term -> Ct -> Atom
+lowerBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b - lhs)
+lowerBoundedAtom b (Div m t)  = Div m (t + b)
+lowerBoundedAtom _ (Bool _)   = error "lowerBoundedAtom on Bool"
 
 
 
 
 -- | Value of constraint as variable gets arbitrarily large
-posInfAtom :: Ct -> Atom
-posInfAtom a@(Bool _)  = a
-posInfAtom (Atom op _ _) = Bool $ case op of
-                                    Eq  -> False
-                                    Neq -> True
-                                    Lt  -> False
-                                    Leq -> False
-                                    Gt  -> True
-                                    Geq -> True
-
--- x |-> -x
-posInfDiv :: Bool -> Name -> DivCt -> DivCt
-posInfDiv o x (m,t) = (m, tLet x (negate var) t)
-  where var = if o then 1 else tVar x
+posInfAtom :: Name -> Ct -> Atom
+posInfAtom _ a@(Bool _)    = a
+posInfAtom _ (Atom op _ _) = Bool $ case op of
+                                      Eq  -> False
+                                      Neq -> True
+                                      Lt  -> False
+                                      Leq -> False
+                                      Gt  -> True
+                                      Geq -> True
+posInfAtom x (Div m t)     = Div m (tLet x (negate (tVar x)) t)
 
 
 -- x |-> b - x
-upperBoundedAtom :: Bool -> Term -> Ct -> Atom
-upperBoundedAtom o b (Atom op lhs rhs) = Atom op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b + var)
-        var = if o then 1 else lhs
+upperBoundedAtom :: Name -> Term -> Ct -> Atom
+upperBoundedAtom _ b (Atom op lhs rhs) = Atom op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b + lhs)
+upperBoundedAtom x b (Div m t) = Div m (tLet x (b - tVar x) t)
 upperBoundedAtom _ _ (Bool _) = error "upperBoundedAtom on Bool"
 
+
+
+
+
 -- x |-> b - x
-upperBoundedDivCt :: Bool -> Name -> Term -> DivCt -> DivCt
-upperBoundedDivCt o x b (m,t) = (m, tLet x (b - var) t)
-  where var = if o then 1 else tVar x
+upperBoundedDivCt :: Name -> Term -> DivCt -> DivCt
+upperBoundedDivCt x b (m,t) = (m, tLet x (b - var) t)
+  where var = tVar x
+
+-- x |-> -x
+posInfDiv :: Name -> DivCt -> DivCt
+posInfDiv x (m,t) = (m, tLet x (negate var) t)
+  where var = tVar x
+
+-- x |-> x + b
+lowerBoundedDivCt :: Name -> Term -> DivCt -> DivCt
+lowerBoundedDivCt x b (m,t) = (m, t + b)
+
+-- x |-> x
+negInfDiv :: Name -> DivCt -> DivCt
+negInfDiv _ ct   = ct
 
 
 
@@ -186,19 +197,17 @@ ex x fo@(F ds as cs) =
       -- add new divisibilty constraint, unless boring.
       newCs         = if c == 1 then cs1 else Right (c, tVar x) : cs1
       delta         = foldr lcm' 1 newCs
-      justOne       = delta == 1
 
-
-      newDs         = if justOne then ds else (x,delta) : ds
+      newDs         = if delta == 1 then ds else (x,delta) : ds
 
       mkF af cf     = F newDs (fromRight af as1) (fromRight cf newCs)
 
-      negF          = mkF negInfAtom (negInfDiv justOne x)
-      lBound b      = mkF (lowerBoundedAtom justOne b)
-                          (lowerBoundedDivCt justOne x b)
-      posF          = mkF posInfAtom (posInfDiv justOne x)
-      uBound b      = mkF (upperBoundedAtom justOne b)
-                          (upperBoundedDivCt justOne x b)
+      negF          = mkF negInfAtom (negInfDiv x)
+      lBound b      = mkF (lowerBoundedAtom b)
+                          (lowerBoundedDivCt x b)
+      posF          = mkF (posInfAtom x) (posInfDiv x)
+      uBound b      = mkF (upperBoundedAtom x b)
+                          (upperBoundedDivCt x b)
 
   in if trivial
      then [fo]
@@ -220,21 +229,13 @@ exists ns = go ns
 
 
 check :: F -> [JList Bool]
-check (F ds as cs) = go [] (Div.solve ds cs)
+check (F ds as cs) = map (\su -> fmap (evalAtom su) as) (Div.solve ds cs)
   where
-  go x (su : sus) = fmap (evalAtom su) as : go x sus
-  go _ []         = []
-{-
-  go solns [] = solns
-  go solns (su : sus) =
-    let new = fmap (evalAtom su) as
-    in if isTop new then [new] else go (addSoln new solns) sus
--}
-
   evalTerm su t = case isConst (Div.instTerm su t) of
                     Just n  -> n
                     Nothing -> error "Unbound free variable."
 
+  evalAtom su (Div m t) = m == 1 || mod (evalTerm su t) m == 0
   evalAtom _ (Bool b) = b
   evalAtom su (Atom op lhs rhs) =
     case op of
@@ -245,31 +246,7 @@ check (F ds as cs) = go [] (Div.solve ds cs)
       Eq  -> evalTerm su lhs == evalTerm su rhs
       Neq -> evalTerm su lhs /= evalTerm su rhs
 
-isTop :: JList Bool -> Bool
-isTop (One x)     = x
-isTop (Two xs ys) = isTop xs && isTop ys
 
--- | Check to see if one of the solutions implies the other.
--- Smaller implies larger
-merge :: JList Bool -> JList Bool -> Maybe Ordering
-merge as bs = go EQ (toList as) (toList bs)
-  where
-  go d (x : xs) (y : ys)
-    | x == y    = go d xs ys
-    | x <  y    = if d == GT then Nothing else go LT xs ys
-    | otherwise = if d == LT then Nothing else go GT xs ys
-  go d [] []    = Just d
-  go _ _ _      = Nothing -- different lengths, should not happen
-
-
-addSoln :: JList Bool -> [JList Bool] -> [JList Bool]
-addSoln new [] = [new]
-addSoln new (cur : more) =
-  case merge new cur of
-    Nothing -> cur : addSoln new more
-    Just EQ -> cur : more
-    Just LT -> cur : more
-    Just GT -> addSoln new more
 
 
 
