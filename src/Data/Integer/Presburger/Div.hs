@@ -33,7 +33,7 @@ type DivCt = (Integer, Term)
 of divisibilty constraints, compute the possible values for the variables.
 We are only interested in values between 1 and the upper bound (inclusive). -}
 
-solve :: [(Int, Integer)] -> [(Integer, Term)] -> [[(Int, Integer)]]
+solve :: [(Name, Integer)] -> [(Integer, Term)] -> [[(Name, Integer)]]
 solve xs cs = solve' xs cs
 
 
