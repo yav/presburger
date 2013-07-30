@@ -10,12 +10,15 @@ import Data.Either(rights)
 
 
 
-data Atom   = Atom !Op Term Term
-            | Div Integer Term
+data Atom   = Atom !Pol !Pred Term Term
+            | Div !Pol !Integer Term
             | Bool Bool
               deriving Eq
 
-data Op     = Eq | Neq | Lt | Leq | Gt | Geq
+data Pol    = Pos | Neg
+              deriving Eq
+
+data Pred   = Eq | Lt | Leq
               deriving Eq
 
 data F      = F [(Name,Integer)] (JList Atom) [DivCt]
@@ -25,19 +28,24 @@ instance Show Atom where
   showsPrec p a cs = show (ppPrec p a) ++ cs
 
 instance PP Atom where
-  ppPrec _ (Atom op lhs rhs) = char '"' <>
+  ppPrec _ (Atom pol op lhs rhs) = char '"' <>
                                 pp lhs <+> text o <+> pp rhs <> char '"'
-    where o = case op of
-                Lt  -> "<"
-                Leq -> "<="
-                Gt  -> ">"
-                Geq -> "=>"
-                Eq  -> "=="
-                Neq -> "/="
+    where o = case (pol,op) of
+                (Pos,Lt)  -> "<"
+                (Pos,Leq) -> "<="
+                (Pos,Eq)  -> "=="
+                (Neg,Leq) -> ">"
+                (Neg,Lt)  -> "=>"
+                (Neg,Eq)  -> "/="
 
   ppPrec _ (Bool x) = text (if x then "True" else "False")
 
-  ppPrec _ (Div x t) = char '"' <> integer x <+> text "|" <+> pp t <> char '"'
+  ppPrec _ (Div p x t) = ppPol p
+                       $ char '"' <> integer x <+> text "|" <+> pp t <> char '"'
+
+ppPol :: Pol -> Doc -> Doc
+ppPol Pos x = x
+ppPol Neg x = text "Not" <+> parens x
 
 type Ct = Atom
 
@@ -49,26 +57,26 @@ aCt :: Name    ->   -- ^ Variable.
        Integer ->   -- ^ LCM of all coefficients for the variable (LAZY).
        Atom    ->   -- ^ Constraint to be normalizied.
        Either Atom (Integer, Ct)
-aCt x c (Atom op lhs rhs)
-  | lC /= 0 = Right ( lC, Atom op (tVar x) (div c lC |*| (rhs - lRest)) )
+aCt x c (Atom pol op lhs rhs)
+  | lC /= 0 = Right ( lC, Atom pol op (tVar x) (div c lC |*| (rhs - lRest)) )
   where
   (lC, lRest) = tSplitVar x lhs
 
-aCt x c (Atom op lhs rhs)
-  | rC /= 0 = Right ( rC, Atom newOp (tVar x) (div c rC |*| (lhs - rRest)) )
+aCt x c (Atom pol op lhs rhs)
+  | rC /= 0 = Right ( rC, Atom newP newOp (tVar x) (div c rC |*| (lhs - rRest)) )
   where
   (rC, rRest) = tSplitVar x rhs
-  newOp = case op of
-            Lt  -> Gt
-            Leq -> Geq
-            Gt  -> Lt
-            Geq -> Leq
-            Eq  -> Eq
-            Neq -> Neq
+  (newP,newOp) = case (pol,op) of
+                   (Pos,Eq)  -> (Pos,Eq)
+                   (Pos,Lt)  -> (Neg,Leq)
+                   (Pos,Leq) -> (Neg,Lt)
+                   (Neg,Eq)  -> (Neg,Eq)
+                   (Neg,Lt)  -> (Pos,Leq)
+                   (Neg,Leq) -> (Pos,Lt)
 
-aCt x c (Div m t)
+aCt x c (Div p m t)
   | coeff /= 0  = let sc = div c coeff
-                  in Right (coeff, Div (abs (m * sc)) (tVar x + sc |*| rest))
+                  in Right (coeff, Div p (abs (m * sc)) (tVar x + sc |*| rest))
   where (coeff,rest) = tSplitVar x t
 
 aCt _ _ a = Left a
@@ -108,14 +116,14 @@ lcm' (Left _)          l = l
 getBounds :: [Ct] -> Either [Term] [Term]
 getBounds = go (0::Int) [] []
   where
-  go !d !ls !us (Atom op _ rhs : more) =
-    case op of
-      Lt  -> go (d+1) ls             (rhs : us)     more
-      Gt  -> go (d-1) (rhs : ls)     us             more
-      Leq -> go (d+1) ls             (rhs + 1 : us) more
-      Geq -> go (d-1) (rhs - 1 : ls) us             more
-      Eq  -> go d     (rhs - 1 : ls) (rhs + 1 : us) more
-      Neq -> go d     (rhs : ls)     (rhs : us)     more
+  go !d !ls !us (Atom pol op _ rhs : more) =
+    case (pol,op) of
+      (Pos,Lt ) -> go (d+1) ls             (rhs : us)     more
+      (Neg,Leq) -> go (d-1) (rhs : ls)     us             more
+      (Pos,Leq) -> go (d+1) ls             (rhs + 1 : us) more
+      (Neg,Lt ) -> go (d-1) (rhs - 1 : ls) us             more
+      (Pos,Eq ) -> go d     (rhs - 1 : ls) (rhs + 1 : us) more
+      (Neg,Eq ) -> go d     (rhs : ls)     (rhs : us)     more
 
   go d ls us (Bool _ : more) = go d ls us more
   go d ls us (Div {} : more) = go d ls us more
@@ -125,20 +133,17 @@ getBounds = go (0::Int) [] []
 -- | Value of constraint as variable gets arbitrarily small.
 negInfAtom :: Ct -> Atom
 negInfAtom a@(Bool _)    = a
-negInfAtom (Atom op _ _) = Bool $ case op of
-                                    Eq  -> False
-                                    Neq -> True
-                                    Lt  -> True
-                                    Leq -> True
-                                    Gt  -> False
-                                    Geq -> False
-negInfAtom a@(Div _ _)   = a
+negInfAtom (Atom pol op _ _) = Bool $ evalPol pol $ case op of
+                                                      Eq  -> False
+                                                      Lt  -> True
+                                                      Leq -> True
+negInfAtom a@(Div {})   = a
 
 -- x |-> x + b
 lowerBoundedAtom :: Term -> Ct -> Atom
-lowerBoundedAtom b (Atom op lhs rhs) = Atom op newLhs newRhs
+lowerBoundedAtom b (Atom pol op lhs rhs) = Atom pol op newLhs newRhs
   where (newLhs,newRhs) = tSplit (rhs - b - lhs)
-lowerBoundedAtom b (Div m t)  = Div m (t + b)
+lowerBoundedAtom b (Div p m t)= Div p m (t + b)
 lowerBoundedAtom _ (Bool _)   = error "lowerBoundedAtom on Bool"
 
 
@@ -147,21 +152,17 @@ lowerBoundedAtom _ (Bool _)   = error "lowerBoundedAtom on Bool"
 -- | Value of constraint as variable gets arbitrarily large
 posInfAtom :: Name -> Ct -> Atom
 posInfAtom _ a@(Bool _)    = a
-posInfAtom _ (Atom op _ _) = Bool $ case op of
-                                      Eq  -> False
-                                      Neq -> True
-                                      Lt  -> False
-                                      Leq -> False
-                                      Gt  -> True
-                                      Geq -> True
-posInfAtom x (Div m t)     = Div m (tLet x (negate (tVar x)) t)
+posInfAtom _ (Atom pol _ _ _) = Bool $ case pol of
+                                         Pos -> False
+                                         Neg -> True
+posInfAtom x (Div p m t)     = Div p m (tLet x (negate (tVar x)) t)
 
 
 -- x |-> b - x
 upperBoundedAtom :: Name -> Term -> Ct -> Atom
-upperBoundedAtom _ b (Atom op lhs rhs) = Atom op newLhs newRhs
+upperBoundedAtom _ b (Atom pol op lhs rhs) = Atom pol op newLhs newRhs
   where (newLhs,newRhs) = tSplit (rhs - b + lhs)
-upperBoundedAtom x b (Div m t) = Div m (tLet x (b - tVar x) t)
+upperBoundedAtom x b (Div p m t) = Div p m (tLet x (b - tVar x) t)
 upperBoundedAtom _ _ (Bool _) = error "upperBoundedAtom on Bool"
 
 
@@ -235,16 +236,18 @@ check (F ds as cs) = map (\su -> fmap (evalAtom su) as) (Div.solve ds cs)
                     Just n  -> n
                     Nothing -> error "Unbound free variable."
 
-  evalAtom su (Div m t) = m == 1 || mod (evalTerm su t) m == 0
+  evalAtom su (Div p m t) = evalPol p (m == 1 || mod (evalTerm su t) m == 0)
   evalAtom _ (Bool b) = b
-  evalAtom su (Atom op lhs rhs) =
+  evalAtom su (Atom pol op lhs rhs) =
+    evalPol pol $
     case op of
       Lt  -> evalTerm su lhs <  evalTerm su rhs
       Leq -> evalTerm su lhs <= evalTerm su rhs
-      Gt  -> evalTerm su lhs >  evalTerm su rhs
-      Geq -> evalTerm su lhs >= evalTerm su rhs
       Eq  -> evalTerm su lhs == evalTerm su rhs
-      Neq -> evalTerm su lhs /= evalTerm su rhs
+
+evalPol :: Pol -> Bool -> Bool
+evalPol Pos x = x
+evalPol Neg x = not x
 
 
 
