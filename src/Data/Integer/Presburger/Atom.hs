@@ -30,13 +30,17 @@ instance Show Atom where
 instance PP Atom where
   ppPrec _ (Atom pol op lhs rhs) = char '"' <>
                                 pp lhs <+> text o <+> pp rhs <> char '"'
-    where o = case (pol,op) of
-                (Pos,Lt)  -> "<"
-                (Pos,Leq) -> "<="
-                (Pos,Eq)  -> "=="
-                (Neg,Leq) -> ">"
-                (Neg,Lt)  -> "=>"
-                (Neg,Eq)  -> "/="
+    where o = case pol of
+                Pos ->
+                  case op of
+                    Lt  -> "<"
+                    Leq -> "<="
+                    Eq  -> "=="
+                Neg ->
+                  case op of
+                    Leq -> ">"
+                    Lt  -> ">="
+                    Eq  -> "/="
 
   ppPrec _ (Bool x) = text (if x then "True" else "False")
 
