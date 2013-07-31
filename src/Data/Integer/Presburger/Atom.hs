@@ -51,7 +51,8 @@ ppPol :: Pol -> Doc -> Doc
 ppPol Pos x = x
 ppPol Neg x = text "Not" <+> parens x
 
-type Ct = Atom
+data Ct = AtomCt Pol PredS Name Term    -- x `op` t
+        | DivCt  Pol Integer Name Term  -- k | (x + t)
 
 {- | Transform atom so that variable is on the LHS with coefficient 1.
 If the variable is not mentioned in the atom, then it is left unchanged,
@@ -62,28 +63,33 @@ aCt :: Name    ->   -- ^ Variable.
        Atom    ->   -- ^ Constraint to be normalizied.
        Either Atom (Integer, Ct)
 aCt x c (Atom pol op lhs rhs)
-  | lC /= 0 = Right ( lC, Atom pol op (tVar x) (div c lC |*| (rhs - lRest)) )
+  | lC /= 0 = Right (lC, AtomCt pol op x (div c lC |*| (rhs - lRest)))
   where
   (lC, lRest) = tSplitVar x lhs
 
 aCt x c (Atom pol op lhs rhs)
-  | rC /= 0 = Right ( rC, Atom newP newOp (tVar x) (div c rC |*| (lhs - rRest)) )
+  | rC /= 0 = Right (rC, AtomCt newP newOp x (div c rC |*| (lhs - rRest)))
   where
   (rC, rRest) = tSplitVar x rhs
-  (newP,newOp) = case (pol,op) of
-                   (Pos,Eq)  -> (Pos,Eq)
-                   (Pos,Lt)  -> (Neg,Leq)
-                   (Pos,Leq) -> (Neg,Lt)
-                   (Neg,Eq)  -> (Neg,Eq)
-                   (Neg,Lt)  -> (Pos,Leq)
-                   (Neg,Leq) -> (Pos,Lt)
+  (newP,newOp) = case pol of
+                   Pos ->
+                     case op of
+                       Eq  -> (Pos,Eq)
+                       Lt  -> (Neg,Leq)
+                       Leq -> (Neg,Lt)
+                   Neg ->
+                     case op of
+                       Eq  -> (Neg,Eq)
+                       Lt  -> (Pos,Leq)
+                       Leq -> (Pos,Lt)
 
 aCt x c (Div p m t)
   | coeff /= 0  = let sc = div c coeff
-                  in Right (coeff, Div p (abs (m * sc)) (tVar x + sc |*| rest))
+                  in Right (coeff, DivCt p (abs (m * sc)) x (sc |*| rest))
   where (coeff,rest) = tSplitVar x t
 
 aCt _ _ a = Left a
+
 
 -- | Normalize a divisibility constraint, so that coefficient
 -- of the variable is 1.
@@ -120,7 +126,7 @@ lcm' (Left _)          l = l
 getBounds :: [Ct] -> Either [Term] [Term]
 getBounds = go (0::Int) [] []
   where
-  go !d !ls !us (Atom pol op _ rhs : more) =
+  go !d !ls !us (AtomCt pol op _ rhs : more) =
     case (pol,op) of
       (Pos,Lt ) -> go (d+1) ls             (rhs : us)     more
       (Neg,Leq) -> go (d-1) (rhs : ls)     us             more
@@ -129,45 +135,41 @@ getBounds = go (0::Int) [] []
       (Pos,Eq ) -> go d     (rhs - 1 : ls) (rhs + 1 : us) more
       (Neg,Eq ) -> go d     (rhs : ls)     (rhs : us)     more
 
-  go d ls us (Bool _ : more) = go d ls us more
-  go d ls us (Div {} : more) = go d ls us more
-  go d ls us []              = if d >= 0 then Left ls else Right us
+  go d ls us (DivCt {} : more) = go d ls us more
+  go d ls us []                = if d >= 0 then Left ls else Right us
 
 
 -- | Value of constraint as variable gets arbitrarily small.
 negInfAtom :: Ct -> Atom
-negInfAtom a@(Bool _)    = a
-negInfAtom (Atom pol op _ _) = Bool $ evalPol pol $ case op of
-                                                      Eq  -> False
-                                                      Lt  -> True
-                                                      Leq -> True
-negInfAtom a@(Div {})   = a
+negInfAtom (AtomCt pol op _ _) = Bool $ evalPol pol $ case op of
+                                                        Eq  -> False
+                                                        Lt  -> True
+                                                        Leq -> True
+negInfAtom (DivCt pol m x t)   = Div pol m (tVar x + t)
 
 -- x |-> x + b
 lowerBoundedAtom :: Term -> Ct -> Atom
-lowerBoundedAtom b (Atom pol op lhs rhs) = Atom pol op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b - lhs)
-lowerBoundedAtom b (Div p m t)= Div p m (t + b)
-lowerBoundedAtom _ (Bool _)   = error "lowerBoundedAtom on Bool"
+lowerBoundedAtom b (AtomCt pol op x rhs) = Atom pol op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b - tVar x)
+lowerBoundedAtom b (DivCt pol m _ t)= Div pol m (t + b)
 
 
 
 
 -- | Value of constraint as variable gets arbitrarily large
-posInfAtom :: Name -> Ct -> Atom
-posInfAtom _ a@(Bool _)    = a
-posInfAtom _ (Atom pol _ _ _) = Bool $ case pol of
+-- x |-> -x
+posInfAtom :: Ct -> Atom
+posInfAtom (AtomCt pol _ _ _) = Bool $ case pol of
                                          Pos -> False
                                          Neg -> True
-posInfAtom x (Div p m t)     = Div p m (tLet x (negate (tVar x)) t)
+posInfAtom (DivCt p m x t)    = Div p m (t - tVar x)
 
 
 -- x |-> b - x
-upperBoundedAtom :: Name -> Term -> Ct -> Atom
-upperBoundedAtom _ b (Atom pol op lhs rhs) = Atom pol op newLhs newRhs
-  where (newLhs,newRhs) = tSplit (rhs - b + lhs)
-upperBoundedAtom x b (Div p m t) = Div p m (tLet x (b - tVar x) t)
-upperBoundedAtom _ _ (Bool _) = error "upperBoundedAtom on Bool"
+upperBoundedAtom :: Term -> Ct -> Atom
+upperBoundedAtom b (AtomCt pol op x rhs) = Atom pol op newLhs newRhs
+  where (newLhs,newRhs) = tSplit (rhs - b + tVar x)
+upperBoundedAtom b (DivCt p m x t) = Div p m (t + b - tVar x)
 
 
 
@@ -210,8 +212,8 @@ ex x fo@(F ds as cs) =
       negF          = mkF negInfAtom (negInfDiv x)
       lBound b      = mkF (lowerBoundedAtom b)
                           (lowerBoundedDivCt x b)
-      posF          = mkF (posInfAtom x) (posInfDiv x)
-      uBound b      = mkF (upperBoundedAtom x b)
+      posF          = mkF posInfAtom (posInfDiv x)
+      uBound b      = mkF (upperBoundedAtom b)
                           (upperBoundedDivCt x b)
 
   in if trivial
