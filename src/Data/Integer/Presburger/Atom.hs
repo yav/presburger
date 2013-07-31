@@ -10,15 +10,15 @@ import Data.Either(rights)
 
 
 
-data Atom   = Atom !Pol !Pred Term Term
-            | Div !Pol !Integer Term
-            | Bool Bool
+data Atom   = Atom !Pol !PredS Term Term
+            | Div  !Pol !Integer Term
+            | Bool !Bool
               deriving Eq
 
 data Pol    = Pos | Neg
               deriving Eq
 
-data Pred   = Eq | Lt | Leq
+data PredS  = Eq | Lt | Leq
               deriving Eq
 
 data F      = F [(Name,Integer)] (JList Atom) [DivCt]
