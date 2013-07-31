@@ -9,17 +9,27 @@ import Text.PrettyPrint
 import Data.Either(rights)
 
 
-
+-- | Basic propositions.
 data Atom   = Atom !Pol !PredS Term Term
             | Div  !Pol !Integer Term
             | Bool !Bool
               deriving Eq
 
-data Pol    = Pos | Neg
+-- | Polarity of atoms.
+data Pol    = Pos     -- ^ Normal atom.
+            | Neg     -- ^ Negated atom.
               deriving Eq
 
+-- | Binary predicate symbols.
 data PredS  = Eq | Lt | Leq
               deriving Eq
+
+{- | A type used while eliminating the quantifier for a variable.
+The atoms are normalized so that the variable is on its own and has
+coefficient 1. -}
+data Ct     = AtomCt Pol PredS Name Term    -- x `op` t
+            | DivCt  Pol Integer Name Term  -- k | (x + t)
+
 
 data F      = F [(Name,Integer)] (JList Atom) [DivCt]
                 deriving Show
@@ -50,9 +60,6 @@ instance PP Atom where
 ppPol :: Pol -> Doc -> Doc
 ppPol Pos x = x
 ppPol Neg x = text "Not" <+> parens x
-
-data Ct = AtomCt Pol PredS Name Term    -- x `op` t
-        | DivCt  Pol Integer Name Term  -- k | (x + t)
 
 {- | Transform atom so that variable is on the LHS with coefficient 1.
 If the variable is not mentioned in the atom, then it is left unchanged,
