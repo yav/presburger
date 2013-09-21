@@ -8,7 +8,10 @@ import           Text.PrettyPrint
 
 type Name = Int
 
--- | The type of terms
+-- | The type of terms.  The integer is the constant part of the term,
+-- and the `IntMap` maps variables (represented yb @Int@ to their coefficients).
+-- The term is a sum of its parts.
+-- INVARIANT: the `IntMap` does not map anything to 0.
 data Term = T Integer (IntMap Integer)
               deriving (Eq,Ord)
 
@@ -62,26 +65,32 @@ tLet :: Name -> Term -> Term -> Term
 tLet x t1 t2 = let (a,t) = tSplitVar x t2
                in a |*| t1 + t
 
+-- | Replace a variable with a constant.
 tLetNum :: Name -> Integer -> Term -> Term
 tLetNum x k t = let (c,T n m) = tSplitVar x t
                 in T (c * k + n) m
 
+-- | Construct a term with a single variable.
 tVar :: Name -> Term
 tVar x = T 0 (Map.singleton x 1)
 
 infixr 7 |*|
 
+-- | Multiply a term by a constant
 (|*|) :: Integer -> Term -> Term
 0 |*| _     = fromInteger 0
 1 |*| t     = t
 k |*| T n m = T (k * n) (fmap (k *) m)
 
+-- | Remove occurances of a variable from the term.
 tDrop :: Name -> Term -> Term
 tDrop x (T n m) = T n (Map.delete x m)
 
+-- | Get the coefficient of a term.  Returns 0 if the variable does not occur.
 tCoeff :: Name -> Term -> Integer
 tCoeff x (T _ m) = Map.findWithDefault 0 x m
 
+-- | Remove a variable from the term, and return its coefficient.
 tSplitVar :: Name -> Term -> (Integer, Term)
 tSplitVar x t@(T n m) =
   case Map.updateLookupWithKey (\_ _ -> Nothing) x m of
@@ -89,7 +98,7 @@ tSplitVar x t@(T n m) =
     (Just k,m1) -> (k, T n m1)
 
 -- | Split into (negative, positive) coeficients.
--- All coeficients in the resulting terms are positive (or 0).
+-- All coeficients in the resulting terms are positive.
 tSplit :: Term -> (Term,Term)
 tSplit (T k m) =
   let (m1,m2) = Map.partition (> 0) m
