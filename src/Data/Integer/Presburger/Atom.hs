@@ -14,39 +14,9 @@ import Control.Monad(liftM2)
 data Formula  = AtomF Atom
               | ConnF !Conn Formula Formula
 
-data CtFo     = Fo Formula
-              | CtConnF !Conn CtFo CtFo
-              | CtAtomF Ct
-
 data Conn   = And | Or
               deriving (Show, Eq)
 
-getCts :: CtFo -> [Ct] -> [Ct]
-getCts ctfo more =
-  case ctfo of
-    Fo _            -> more
-    CtConnF _ f1 f2 -> getCts f1 (getCts f2 more)
-    CtAtomF ct      -> ct : more
-
-ctAtoms :: (Ct -> Atom) -> CtFo -> Formula
-ctAtoms f ctfo =
-  case ctfo of
-    Fo fo           -> fo
-    CtConnF c f1 f2 -> ConnF c (ctAtoms f f1) (ctAtoms f f2)
-    CtAtomF ct      -> AtomF (f ct)
-
-
-fLet :: Name -> Term -> Formula -> Formula
-fLet x t fo =
-  case fo of
-    ConnF c f1 f2 -> ConnF c (fLet x t f1) (fLet x t f2)
-    AtomF a ->
-      case a of
-        Atom p s t1 t2 ->
-          let (lhs,rhs) = tSplit $ tLet x t $ t2 - t1
-          in AtomF (mkAtom p s lhs rhs)
-        Div  p m t1    -> AtomF (mkDiv p m (tLet x t t1))
-        Bool _         -> fo
 
 -- | Basic propositions.
 data Atom   = Atom !Pol !PredS Term Term  -- ^ Comparisons
@@ -64,6 +34,19 @@ data PredS  = Eq | Lt | Leq
               deriving Eq
 
 
+mkConn :: Conn -> Formula -> Formula -> Formula
+
+mkConn And f1@(AtomF (Bool False)) _                        = f1
+mkConn And    (AtomF (Bool True))  f2                       = f2
+mkConn And _                       f2@(AtomF (Bool False))  = f2
+mkConn And f1                         (AtomF (Bool True))   = f1
+
+mkConn Or  f1@(AtomF (Bool True))  _                        = f1
+mkConn Or     (AtomF (Bool False)) f2                       = f2
+mkConn Or  _                       f2@(AtomF (Bool True))   = f2
+mkConn Or  f1                         (AtomF (Bool False))  = f1
+
+mkConn c f1 f2 = ConnF c f1 f2
 
 mkAtom :: Pol -> PredS -> Term -> Term -> Atom
 mkAtom p s t1 t2 =
@@ -79,6 +62,40 @@ mkDiv p m t =
        Just b  -> Bool b
        Nothing -> a
 
+fLet :: Name -> Term -> Formula -> Formula
+fLet x t fo =
+  case fo of
+    ConnF c f1 f2 -> mkConn c (fLet x t f1) (fLet x t f2)
+    AtomF a ->
+      case a of
+        Atom p s t1 t2 ->
+          let (lhs,rhs) = tSplit $ tLet x t $ t2 - t1
+          in AtomF (mkAtom p s lhs rhs)
+        Div  p m t1    -> AtomF (mkDiv p m (tLet x t t1))
+        Bool _         -> fo
+
+
+
+
+--------------------------------------------------------------------------------
+
+data CtFo     = Fo Formula
+              | CtConnF !Conn CtFo CtFo
+              | CtAtomF Ct
+
+getCts :: CtFo -> [Ct] -> [Ct]
+getCts ctfo more =
+  case ctfo of
+    Fo _            -> more
+    CtConnF _ f1 f2 -> getCts f1 (getCts f2 more)
+    CtAtomF ct      -> ct : more
+
+ctAtoms :: (Ct -> Atom) -> CtFo -> Formula
+ctAtoms f ctfo =
+  case ctfo of
+    Fo fo           -> fo
+    CtConnF c f1 f2 -> mkConn c (ctAtoms f f1) (ctAtoms f f2)
+    CtAtomF ct      -> AtomF (f ct)
 
 
 
@@ -191,23 +208,23 @@ aCts x form = res
            (lcmCoeff2, lcmDiv2, r') ->
               case (l',r') of
                 (Fo _,Fo _) -> (lcmCoeff, lcmDiv, Fo f)
-                _           -> (lcmCoeff2, lcmDiv2, mkConn c l' r')
+                _           -> (lcmCoeff2, lcmDiv2, mkConn' c l' r')
 
   -- Construct formulas so that parts that do not mention the quantified
   -- variabele float to the front.
-  mkConn c (Fo lf) (CtConnF c' (Fo rf) rest)
-    | c == c'           = CtConnF c (Fo (ConnF c lf rf)) rest
+  mkConn' c (Fo lf) (CtConnF c' (Fo rf) rest)
+    | c == c'           = CtConnF c (Fo (mkConn c lf rf)) rest
 
-  mkConn c (CtConnF c' (Fo lf) rest) (Fo rf)
-    | c == c'           = CtConnF c (Fo (ConnF c lf rf)) rest
+  mkConn' c (CtConnF c' (Fo lf) rest) (Fo rf)
+    | c == c'           = CtConnF c (Fo (mkConn c lf rf)) rest
 
-  mkConn c (CtConnF c' (Fo lf) rest) (CtConnF c'' (Fo rf) rest')
+  mkConn' c (CtConnF c' (Fo lf) rest) (CtConnF c'' (Fo rf) rest')
     | c == c' && c == c'' = CtConnF c (Fo (ConnF c lf rf))
                                       (CtConnF c rest rest')
 
-  mkConn c lf rf@(Fo _) = CtConnF c rf lf
+  mkConn' c lf rf@(Fo _) = CtConnF c rf lf
 
-  mkConn c lf rf        = CtConnF c lf rf
+  mkConn' c lf rf        = CtConnF c lf rf
 
   {- The Equality Optmization
 
@@ -230,7 +247,7 @@ aCts x form = res
   mkAnd a [] = CtAtomF a
   mkAnd a fs =
     let AtomCt _ _ _ t = a
-    in CtConnF And (Fo $ foldl1 (ConnF And) $ map (fLet x t) fs) (CtAtomF a)
+    in CtConnF And (Fo $ foldl1 (mkConn And) $ map (fLet x t) fs) (CtAtomF a)
 
 -- | Is this an equality constraint for the given variable?
 isEq :: Name -> Formula -> Bool
@@ -294,10 +311,10 @@ letAtom b (DivCt p m _ t) = mkDiv p m (b + t)
 -- we don't need to do all of [ 1 .. delta ]
 
 ex :: Name -> Formula -> Formula
-ex x (ConnF Or f1 f2) = ConnF Or (ex x f1) (ex x f2)
+ex x (ConnF Or f1 f2) = mkConn Or (ex x f1) (ex x f2)
 ex x fo =
   let (_coeff, delta, ctFo) = aCts x fo
-      mkOr = ConnF Or
+      mkOr = mkConn Or
       mk :: [Formula] -> [Formula] -> Formula
       mk xs [] = foldr1 mkOr xs
       mk [] ys = foldr1 mkOr ys
