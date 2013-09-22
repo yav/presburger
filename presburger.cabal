@@ -20,7 +20,6 @@ library
     Data.Integer.Presburger.Term
     Data.Integer.Presburger.Atom
     Data.Integer.Presburger.Div
-    Data.Integer.Presburger.JList1
 
   GHC-options:    -O2 -Wall
 
