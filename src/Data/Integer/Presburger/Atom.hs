@@ -41,7 +41,9 @@ fLet x t fo =
     ConnF c f1 f2 -> ConnF c (fLet x t f1) (fLet x t f2)
     AtomF a ->
       case a of
-        Atom p s t1 t2 -> AtomF (Atom p s (tLet x t t1) (tLet x t t2))
+        Atom p s t1 t2 ->
+          let (lhs,rhs) = tSplit $ tLet x t $ t2 - t1
+          in AtomF (Atom p s lhs rhs)
         Div  p m t1    -> AtomF (Div  p m (tLet x t t1))
         Bool _         -> fo
 
