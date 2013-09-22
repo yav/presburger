@@ -160,12 +160,14 @@ freeVars (F fo0) = freeVarsF fo0
 
 -- | Check if there is an integer assignment that can make the statement true.
 isSat :: Formula -> Bool
-isSat f = isTrue $ exists (Set.toList (freeVars f)) f
+isSat f = case isTrue $ exists (Set.toList (freeVars f)) f of
+            Just b  -> b
+            Nothing -> error "isSat encountered a free variable"
 
 -- | Check if the statement is is for any integer assignment.
 isValid :: Formula -> Bool
 isValid = not . isSat . neg
 
-isTrue :: Formula -> Bool
+isTrue :: Formula -> Maybe Bool
 isTrue (F fo) = A.isTrue fo
 

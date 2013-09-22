@@ -9,6 +9,7 @@ module Data.Integer.Presburger.Atom
 import Data.Integer.Presburger.Term
 import Text.PrettyPrint
 import Data.List(partition)
+import Control.Monad(liftM2)
 
 data Formula  = AtomF Atom
               | ConnF !Conn Formula Formula
@@ -43,8 +44,8 @@ fLet x t fo =
       case a of
         Atom p s t1 t2 ->
           let (lhs,rhs) = tSplit $ tLet x t $ t2 - t1
-          in AtomF (Atom p s lhs rhs)
-        Div  p m t1    -> AtomF (Div  p m (tLet x t t1))
+          in AtomF (mkAtom p s lhs rhs)
+        Div  p m t1    -> AtomF (mkDiv p m (tLet x t t1))
         Bool _         -> fo
 
 -- | Basic propositions.
@@ -61,6 +62,25 @@ data Pol    = Pos     -- ^ Normal atom.
 -- | Binary predicate symbols.
 data PredS  = Eq | Lt | Leq
               deriving Eq
+
+
+
+mkAtom :: Pol -> PredS -> Term -> Term -> Atom
+mkAtom p s t1 t2 =
+  let a = Atom p s t1 t2
+  in case evalAtom a of
+       Just b  -> Bool b
+       Nothing -> a
+
+mkDiv :: Pol -> Integer -> Term -> Atom
+mkDiv p m t =
+  let a = Div p m t
+  in case evalAtom a of
+       Just b  -> Bool b
+       Nothing -> a
+
+
+
 
 {- | A type used while eliminating the quantifier for a variable.
 The atoms are normalized so that the variable is on its own and has
@@ -263,9 +283,9 @@ posInfAtom j (DivCt p m _ t)    = Div p m (j |+| t)
 
 -- | Replace the variable in a constraint with the given term.
 letAtom :: Term -> Ct -> Atom
-letAtom b (AtomCt pol op _ rhs) = Atom pol op newLhs newRhs
+letAtom b (AtomCt pol op _ rhs) = mkAtom pol op newLhs newRhs
   where (newLhs,newRhs) = tSplit (rhs - b)
-letAtom b (DivCt p m _ t) = Div p m (b + t)
+letAtom b (DivCt p m _ t) = mkDiv p m (b + t)
 
 
 
@@ -309,30 +329,37 @@ exists ns fo = foldr ex fo ns
 -- Evaluation.
 
 -- | Check if a statement with no free variables is true.
-isTrue :: Formula -> Bool
+isTrue :: Formula -> Maybe Bool
 isTrue fo =
   case fo of
     ConnF c f1 f2 -> evalConn c (isTrue f1) (isTrue f2)
     AtomF a       -> evalAtom a
 
-evalAtom :: Atom -> Bool
-evalAtom (Div p m t) = evalPol p (m == 1 || mod (evalTerm t) m == 0)
-evalAtom (Bool b) = b
+evalAtom :: Atom -> Maybe Bool
+evalAtom (Div p m t) = evalPolMb p $
+                       if m == 1 then Just True
+                                 else do x <- evalTerm t
+                                         return (mod x m == 0)
+evalAtom (Bool b) = Just b
 evalAtom (Atom pol op lhs rhs) =
-  evalPol pol $
+  evalPolMb pol $
   case op of
-    Lt  -> evalTerm lhs <  evalTerm rhs
-    Leq -> evalTerm lhs <= evalTerm rhs
-    Eq  -> evalTerm lhs == evalTerm rhs
+    Lt  -> liftM2 (<)  (evalTerm lhs) (evalTerm rhs)
+    Leq -> liftM2 (<=) (evalTerm lhs) (evalTerm rhs)
+    Eq  -> liftM2 (==) (evalTerm lhs) (evalTerm rhs)
 
-evalTerm :: Term -> Integer
-evalTerm t = case isConst t of
-               Just n  -> n
-               Nothing -> error "Unbound free variable."
+evalTerm :: Term -> Maybe Integer
+evalTerm t = isConst t
 
-evalConn :: Conn -> Bool -> Bool -> Bool
-evalConn And = (&&)
-evalConn Or  = (||)
+evalConn :: Conn -> Maybe Bool -> Maybe Bool -> Maybe Bool
+evalConn And (Just False) _ = Just False
+evalConn And _            y = y
+
+evalConn Or  (Just True) _  = Just True
+evalConn Or  _           y  = y
+
+evalPolMb :: Pol -> Maybe Bool -> Maybe Bool
+evalPolMb p mb = fmap (evalPol p) mb
 
 evalPol :: Pol -> Bool -> Bool
 evalPol Pos x = x
