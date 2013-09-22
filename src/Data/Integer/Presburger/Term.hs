@@ -12,11 +12,15 @@ type Name = Int
 -- and the `IntMap` maps variables (represented yb @Int@ to their coefficients).
 -- The term is a sum of its parts.
 -- INVARIANT: the `IntMap` does not map anything to 0.
-data Term = T Integer (IntMap Integer)
+data Term = T !Integer (IntMap Integer)
               deriving (Eq,Ord)
 
 instance Num Term where
   fromInteger k = T k Map.empty
+
+  x + y
+    | Just k <- isConst x = k |+| y
+    | Just k <- isConst y = k |+| x
 
   T n1 m1 + T n2 m2 = T (n1 + n2) $ Map.filter (/= 0) $ Map.unionWith (+) m1 m2
 
@@ -81,6 +85,12 @@ infixr 7 |*|
 0 |*| _     = fromInteger 0
 1 |*| t     = t
 k |*| T n m = T (k * n) (fmap (k *) m)
+
+-- | Add a constant, a more efficient version of (+)
+(|+|) :: Integer -> Term -> Term
+k |+| T n m = T (k + n) m
+
+
 
 -- | Remove occurances of a variable from the term.
 tDrop :: Name -> Term -> Term
