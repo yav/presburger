@@ -8,7 +8,7 @@ module Data.Integer.Presburger
   , Term
   , T.Name, tVar, (|*|), tITE
 
-  , A.isTrue, isSat, isValid
+  , isTrue, isSat, isValid
   ) where
 
 import qualified Data.Integer.Presburger.Term as T
@@ -160,21 +160,12 @@ freeVars (F fo0) = freeVarsF fo0
 
 -- | Check if there is an integer assignment that can make the statement true.
 isSat :: Formula -> Bool
-isSat f = case exists (Set.toList (freeVars f)) f of
-            F fo -> A.isTrue fo
+isSat f = isTrue $ exists (Set.toList (freeVars f)) f
 
 -- | Check if the statement is is for any integer assignment.
 isValid :: Formula -> Bool
 isValid = not . isSat . neg
 
+isTrue :: Formula -> Bool
+isTrue (F fo) = A.isTrue fo
 
-
-
-{-
-_example :: [F]
-_example = exists [0,1] (F [] as [])
-  where x : y : _ = map tVar [ 0 .. ]
-        Fo _ as = x + 5 * y |>| 1     /\
-                  13 * x - y |>| 1    /\
-                  x + 2 |<| 0
--}
