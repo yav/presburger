@@ -279,6 +279,8 @@ ex x fo =
   let (_coeff, delta, ctFo) = aCts x fo
       mkOr = ConnF Or
       mk :: [Formula] -> [Formula] -> Formula
+      mk xs [] = foldr1 mkOr xs
+      mk [] ys = foldr1 mkOr ys
       mk xs ys = mkOr (foldr1 mkOr xs) (foldr1 mkOr ys)
   in case ctFo of
        Fo f -> f -- Did not mention variable, nothing to do.
