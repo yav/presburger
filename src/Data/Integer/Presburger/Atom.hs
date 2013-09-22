@@ -1,20 +1,24 @@
 {-# LANGUAGE Safe #-}
 {-# LANGUAGE BangPatterns #-}
-module Data.Integer.Presburger.Atom where
+module Data.Integer.Presburger.Atom
+  ( Formula (..), Conn (..), Atom (..), Pol(..), PredS(..)
+  , exists
+  , isTrue
+  ) where
 
 import Data.Integer.Presburger.Term
 import Text.PrettyPrint
 import Data.List(partition)
 
-data Fo     = AtomF Atom
-            | ConnF !Conn Fo Fo
+data Formula  = AtomF Atom
+              | ConnF !Conn Formula Formula
 
-data CtFo   = Fo Fo
-            | CtConnF !Conn CtFo CtFo
-            | CtAtomF Ct
+data CtFo     = Fo Formula
+              | CtConnF !Conn CtFo CtFo
+              | CtAtomF Ct
 
 data Conn   = And | Or
-              deriving Eq
+              deriving (Show, Eq)
 
 getCts :: CtFo -> [Ct] -> [Ct]
 getCts ctfo more =
@@ -23,7 +27,7 @@ getCts ctfo more =
     CtConnF _ f1 f2 -> getCts f1 (getCts f2 more)
     CtAtomF ct      -> ct : more
 
-ctAtoms :: (Ct -> Atom) -> CtFo -> Fo
+ctAtoms :: (Ct -> Atom) -> CtFo -> Formula
 ctAtoms f ctfo =
   case ctfo of
     Fo fo           -> fo
@@ -31,7 +35,7 @@ ctAtoms f ctfo =
     CtAtomF ct      -> AtomF (f ct)
 
 
-fLet :: Name -> Term -> Fo -> Fo
+fLet :: Name -> Term -> Formula -> Formula
 fLet x t fo =
   case fo of
     ConnF c f1 f2 -> ConnF c (fLet x t f1) (fLet x t f2)
@@ -137,7 +141,7 @@ As a result we return:
     * Parts of the formula that do not mention the variable are
       tagged with 'Fo'.
 -}
-aCts :: Name -> Fo -> (Integer, Integer, CtFo)
+aCts :: Name -> Formula -> (Integer, Integer, CtFo)
 aCts x form = res
   where
   res@(lcmCoeffFinal,_,_) = go True 1 1 form
@@ -207,12 +211,12 @@ aCts x form = res
     in CtConnF And (Fo $ foldl1 (ConnF And) $ map (fLet x t) fs) (CtAtomF a)
 
 -- | Is this an equality constraint for the given variable?
-isEq :: Name -> Fo -> Bool
+isEq :: Name -> Formula -> Bool
 isEq x (AtomF (Atom Pos Eq lhs rhs)) = tCoeff x lhs /= 0 || tCoeff x rhs /= 0
 isEq _ _ = False
 
 -- | Split a formula into its conjuncts.  Always returns at least one element.
-splitAnd :: Fo -> [Fo]
+splitAnd :: Formula -> [Formula]
 splitAnd f0 = go f0 []
   where
   go (ConnF And f1 f2) more = go f1 (go f2 more)
@@ -267,12 +271,12 @@ letAtom b (DivCt p m _ t) = Div p m (b + t)
 -- Optimization 2: When we are eliminating top-level quantifiers,
 -- we don't need to do all of [ 1 .. delta ]
 
-ex :: Name -> Fo -> Fo
+ex :: Name -> Formula -> Formula
 ex x (ConnF Or f1 f2) = ConnF Or (ex x f1) (ex x f2)
 ex x fo =
   let (_coeff, delta, ctFo) = aCts x fo
       mkOr = ConnF Or
-      mk :: [Fo] -> [Fo] -> Fo
+      mk :: [Formula] -> [Formula] -> Formula
       mk xs ys = mkOr (foldr1 mkOr xs) (foldr1 mkOr ys)
   in case ctFo of
        Fo f -> f -- Did not mention variable, nothing to do.
@@ -292,7 +296,7 @@ ex x fo =
                [ ctAtoms (letAtom (negate j |+| a)) ctFo
                | j <- [ 1 .. delta ], a <- upperBounds ]
 
-exists :: [Name] -> Fo -> Fo
+exists :: [Name] -> Formula -> Formula
 exists ns fo = foldr ex fo ns
 
 
@@ -300,12 +304,12 @@ exists ns fo = foldr ex fo ns
 --------------------------------------------------------------------------------
 -- Evaluation.
 
-check :: Fo -> Bool
-check fo =
+-- | Check if a statement with no free variables is true.
+isTrue :: Formula -> Bool
+isTrue fo =
   case fo of
-    ConnF Or  f1 f2 -> check f1 || check f2
-    ConnF And f1 f2 -> check f1 && check f2
-    AtomF a         -> evalAtom a
+    ConnF c f1 f2 -> evalConn c (isTrue f1) (isTrue f2)
+    AtomF a       -> evalAtom a
 
 evalAtom :: Atom -> Bool
 evalAtom (Div p m t) = evalPol p (m == 1 || mod (evalTerm t) m == 0)
@@ -321,6 +325,10 @@ evalTerm :: Term -> Integer
 evalTerm t = case isConst t of
                Just n  -> n
                Nothing -> error "Unbound free variable."
+
+evalConn :: Conn -> Bool -> Bool -> Bool
+evalConn And = (&&)
+evalConn Or  = (||)
 
 evalPol :: Pol -> Bool -> Bool
 evalPol Pos x = x
@@ -356,4 +364,23 @@ instance PP Atom where
 ppPol :: Pol -> Doc -> Doc
 ppPol Pos x = x
 ppPol Neg x = text "Not" <+> parens x
+
+
+instance Show Formula where
+  showsPrec p f = showsPrec p (toFF f)
+
+-- For printing
+data FF = FF Conn [FF] | FFAtom Atom
+            deriving Show
+
+toFF :: Formula -> FF
+toFF fo =
+  case fo of
+    AtomF a     -> FFAtom a
+    ConnF c _ _ -> FF c $ map toFF $ gather c fo []
+  where
+  gather c (ConnF c' f1 f2) more
+    | c == c'  = gather c f1 (gather c f2 more)
+  gather _ f more = f : more
+
 

@@ -1,18 +1,18 @@
 {-# LANGUAGE Safe #-}
 module Data.Integer.Presburger
   ( Formula
-  , true, false, (/\), (\/), (==>), neg, ite
+  , bool, true, false, (/\), (\/), (==>), neg, ite
   , (|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|)
+  , forAll, exists
 
   , Term
   , T.Name, tVar, (|*|), tITE
 
-  , checkSat, prove
+  , A.isTrue, isSat, isValid
   ) where
 
 import qualified Data.Integer.Presburger.Term as T
-import           Data.Integer.Presburger.Atom
-import           Data.Integer.Presburger.JList1
+import qualified Data.Integer.Presburger.Atom as A
 import           Data.IntSet (IntSet)
 import qualified Data.IntSet as Set
 
@@ -22,39 +22,15 @@ infixr 2 \/
 infixr 3 /\
 infix  4 |==|, |/=|, |<|, |<=|, |>|, |>=|
 
--- | First-order formulas without quantifiers.
-data Formula  = Fo Skeleton (JList Atom)
+-- | First-order formulas
+newtype Formula  = F A.Formula
 
 instance Show Formula where
-  show x = show (norm x)
-
-data Skeleton = And Skeleton Skeleton | Or Skeleton Skeleton | Prim
-                deriving Show
+  showsPrec p (F x) = showsPrec p x
 
 data Term     = T T.Term
               | ITE Formula Term Term
                 deriving Show
-
--- For printing
-data FF = FFAnd [FF] | FFOr [FF] | FFAtom Atom
-            deriving Show
-
-
-norm :: Formula -> FF
-norm (Fo s j) = step s j
-  where
-  step (And s1 s2) (Two as1 as2) = ffAnd (step s1 as1) (step s2 as2)
-  step (Or s1 s2)  (Two as1 as2) = ffOr  (step s1 as1) (step s2 as2)
-  step Prim        (One a)       = FFAtom a
-  step _           _             = error "Malformed formula"
-
-  ffAnd (FFAnd xs) (FFAnd ys) = FFAnd (xs ++ ys)
-  ffAnd x y                   = FFAnd [x,y]
-
-  ffOr (FFOr xs) (FFOr ys)    = FFOr (xs ++ ys)
-  ffOr x y                    = FFOr [x,y]
-
-
 instance Num Term where
   fromInteger n   = T (fromInteger n)
   (+)             = tBin (+)
@@ -69,22 +45,25 @@ tBin f (T x) (T y)     = T (f x y)
 tBin f (ITE p t1 t2) t = ITE p (tBin f t1 t) (tBin f t2 t)
 tBin f t (ITE p t1 t2) = ITE p (tBin f t t1) (tBin f t t2)
 
+-- | A constant formula.
+bool :: Bool -> Formula
+bool b = F $ A.AtomF $ A.Bool b
+
 -- | A true statement.
 true :: Formula
-true = Fo Prim (One (Bool True))
+true = bool True
 
 -- | A false statement.
 false :: Formula
-false = Fo Prim (One (Bool False))
+false = bool False
 
 -- | Conjunction.
 (/\) :: Formula -> Formula -> Formula
-Fo s1 as1 /\ Fo s2 as2 = Fo (And s1 s2) (Two as1 as2)
-
+F p /\ F q  = F (A.ConnF A.And p q)
 
 -- | Disjunction.
 (\/) :: Formula -> Formula -> Formula
-Fo s1 as1 \/ Fo s2 as2 = Fo (Or s1 s2) (Two as1 as2)
+F p \/ F q = F (A.ConnF A.Or p q)
 
 -- | Implication.
 (==>) :: Formula -> Formula -> Formula
@@ -92,21 +71,22 @@ p ==> q = neg p \/ q
 
 -- | Negation.
 neg :: Formula -> Formula
-neg (Fo s as) = Fo (negS s) (fmap negA as)
+neg (F fo) = F (negF fo)
   where
-  negS Prim        = Prim
-  negS (And s1 s2) = Or  (negS s1) (negS s2)
-  negS (Or  s1 s2) = And (negS s1) (negS s2)
+  negC A.And                = A.Or
+  negC A.Or                 = A.And
 
-  negA (Bool b)          = Bool (not b)
-  negA (Atom op lhs rhs) = Atom newOp lhs rhs
-    where newOp = case op of
-                    Eq  -> Neq
-                    Neq -> Eq
-                    Lt  -> Geq
-                    Leq -> Gt
-                    Gt  -> Leq
-                    Geq -> Lt
+  negP A.Pos                = A.Neg
+  negP A.Neg                = A.Pos
+
+  negF (A.ConnF c f1 f2)    = A.ConnF (negC c) (negF f1) (negF f2)
+  negF (A.AtomF a)          = A.AtomF (negA a)
+
+  negA (A.Bool b)           = A.Bool (not b)
+  negA (A.Atom pol op t1 t2)= A.Atom (negP pol) op t1 t2
+  negA (A.Div  pol m t)     = A.Div  (negP pol) m t
+
+
 
 -- | If-then-else.
 ite :: Formula -> Formula -> Formula -> Formula
@@ -127,69 +107,74 @@ tITE = ITE
 
 -- | Assert that terms are the same.
 (|==|) :: Term -> Term -> Formula
-t1 |==| t2 = atom Eq  t1 t2
-
--- | Assert that terms are different.
-(|/=|) :: Term -> Term -> Formula
-t1 |/=| t2 = atom Neq t1 t2
+t1 |==| t2 = atom A.Eq  t1 t2
 
 -- | Assert that the first term is strictly smaller.
 (|<|) :: Term -> Term -> Formula
-t1 |<|  t2 = atom Lt  t1 t2
+t1 |<|  t2 = atom A.Lt  t1 t2
 
 -- | Assert that the first term is smaller than or equal to the second one.
 (|<=|) :: Term -> Term -> Formula
-t1 |<=| t2 = atom Leq t1 t2
+t1 |<=| t2 = atom A.Leq t1 t2
+
+-- | Assert that terms are different.
+(|/=|) :: Term -> Term -> Formula
+t1 |/=| t2 = neg (t1 |==| t2)
 
 -- | Assert that the first term is strictly greater than the second.
 (|>|) :: Term -> Term -> Formula
-t1 |>| t2 = atom Gt  t1 t2
+t1 |>| t2 = neg (t1 |<=| t2)
 
 -- | Assert that the first term is greater than or equal to the second.
 (|>=|) :: Term -> Term -> Formula
-t1 |>=| t2 = atom Geq t1 t2
+t1 |>=| t2 = neg (t1 |<| t2)
 
-atom :: Op -> Term -> Term -> Formula
-atom op (T t1) (T t2) = Fo Prim (One (Atom op lhs rhs))
+atom :: A.PredS -> Term -> Term -> Formula
+atom op (T t1) (T t2) = F $ A.AtomF $ A.Atom A.Pos op lhs rhs
   where (lhs,rhs) = T.tSplit (t2 - t1)
 atom op (ITE f t1 t2) t = ite f (atom op t1 t) (atom op t2 t)
 atom op t (ITE f t1 t2) = ite f (atom op t t1) (atom op t t2)
 
+exists :: [T.Name] -> Formula -> Formula
+exists xs (F f) = F (A.exists xs f)
 
-assign :: Skeleton -> JList Bool -> Bool
-assign s bs0 = go s bs0
+forAll :: [T.Name] -> Formula -> Formula
+forAll xs f = neg $ exists xs $ neg f
+
+
+--------------------------------------------------------------------------------
+
+freeVars :: Formula -> IntSet
+freeVars (F fo0) = freeVarsF fo0
   where
-  go Prim        (One b)     = b
-  go (And f1 f2) (Two xs ys) = go f1 xs && go f2 ys
-  go (Or  f1 f2) (Two xs ys) = go f1 xs || go f2 ys
-  go _ _                     = error "shape mismatch in `assign`"
+  freeVarsF fo =
+    case fo of
+      A.ConnF _ f1 f2 -> Set.union (freeVarsF f1) (freeVarsF f2)
+      A.AtomF a       -> freeVarsA a
+
+  freeVarsA at =
+    case at of
+      A.Bool _          -> Set.empty
+      A.Div _ _ t       -> T.tVars t
+      A.Atom _ _ t1 t2  -> Set.union (T.tVars t1) (T.tVars t2)
+
+-- | Check if there is an integer assignment that can make the statement true.
+isSat :: Formula -> Bool
+isSat f = case exists (Set.toList (freeVars f)) f of
+            F fo -> A.isTrue fo
+
+-- | Check if the statement is is for any integer assignment.
+isValid :: Formula -> Bool
+isValid = not . isSat . neg
 
 
--- | Check if the formula is satisfiable, which means that there are
--- integers that can be assigned to the free varaibles so that
--- the statement becomes true.
-checkSat :: Formula -> Bool
-checkSat (Fo (Or f1 f2) (Two as1 as2)) = checkSat (Fo f1 as1) ||
-                                         checkSat (Fo f2 as2)
-checkSat (Fo s as) =
-  let vs = fold Set.union (fmap aVars as) Set.empty
-      fs = exists (Set.toList vs) (F [] as [])
-      ss = concatMap check fs
-  in any (assign s) ss
-
--- | Check if a formula is valid, which means that it is true no matter
--- what integers we choose for the free variables.
-prove :: Formula -> Bool
-prove f = not (checkSat (neg f))
-
-aVars :: Atom -> IntSet
-aVars (Bool _)         = Set.empty
-aVars (Atom _ lhs rhs) = Set.union (T.tVars lhs) (T.tVars rhs)
 
 
+{-
 _example :: [F]
 _example = exists [0,1] (F [] as [])
   where x : y : _ = map tVar [ 0 .. ]
         Fo _ as = x + 5 * y |>| 1     /\
                   13 * x - y |>| 1    /\
                   x + 2 |<| 0
+-}
