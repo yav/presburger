@@ -4,6 +4,7 @@ module Data.Integer.Presburger.Atom where
 
 import Data.Integer.Presburger.Term
 import Text.PrettyPrint
+import Data.List(partition)
 
 data Fo     = AtomF Atom
             | ConnF !Conn Fo Fo
@@ -135,28 +136,87 @@ As a result we return:
     * the LCM of all divisors where the (new) variable is mentioned,
     * Parts of the formula that do not mention the variable are
       tagged with 'Fo'.
-
-XXX: Optimization 1: ex x (x == t /\ P) --> ex x (x == t) /\ P (t/x)
 -}
 aCts :: Name -> Fo -> (Integer, Integer, CtFo)
 aCts x form = res
   where
-  res@(lcmCoeffFinal,_,_) = go 1 1 form
+  res@(lcmCoeffFinal,_,_) = go True 1 1 form
 
-  go lcmCoeff lcmDiv f@(AtomF a) =
+  {- The boolean paramter to 'go' indicates if we should try the equality
+     optimization. We implement this in `tryEqOpt` which flattens
+     a conjunction and looks for equalities.  If we don't find any equalities,
+     we go back to the `go` function, but now we disable the optimization,
+     to avoid an infinite loop.   The optimization is autmoatically re-enabled
+     when we go under a disjunction.
+  -}
+
+  go _ lcmCoeff lcmDiv f@(AtomF a) =
     case aCt x lcmCoeffFinal lcmCoeff lcmDiv a of -- RECURSION: cf lcmCoeffFinal
       Just (lcmCoeff', lcmDiv', ct) -> (lcmCoeff', lcmDiv', CtAtomF ct)
       Nothing                       -> (lcmCoeff,  lcmDiv,  Fo f)
 
-  go lcmCoeff lcmDiv f@(ConnF c l r) =
-    case go lcmCoeff lcmDiv l of
+  -- Try equality optimization.
+  go True lcmCoeff lcmDiv f@(ConnF And _ _) = tryEqOpt lcmCoeff lcmDiv f
+
+  go _ lcmCoeff lcmDiv f@(ConnF c l r) =
+    case go (c == Or) lcmCoeff lcmDiv l of
       (lcmCoeff1, lcmDiv1, l') ->
-         case go lcmCoeff1 lcmDiv1 r of
+         case go (c == Or) lcmCoeff1 lcmDiv1 r of
            (lcmCoeff2, lcmDiv2, r') ->
               case (l',r') of
                 (Fo _,Fo _) -> (lcmCoeff, lcmDiv, Fo f)
-                _           -> (lcmCoeff2, lcmDiv2, CtConnF c l' r')
+                _           -> (lcmCoeff2, lcmDiv2, mkConn c l' r')
 
+  -- Construct formulas so that parts that do not mention the quantified
+  -- variabele float to the front.
+  mkConn c (Fo lf) (CtConnF c' (Fo rf) rest)
+    | c == c'           = CtConnF c (Fo (ConnF c lf rf)) rest
+
+  mkConn c (CtConnF c' (Fo lf) rest) (Fo rf)
+    | c == c'           = CtConnF c (Fo (ConnF c lf rf)) rest
+
+  mkConn c (CtConnF c' (Fo lf) rest) (CtConnF c'' (Fo rf) rest')
+    | c == c' && c == c'' = CtConnF c (Fo (ConnF c lf rf))
+                                      (CtConnF c rest rest')
+
+  mkConn c lf rf@(Fo _) = CtConnF c rf lf
+
+  mkConn c lf rf        = CtConnF c lf rf
+
+  {- The Equality Optmization
+
+  We look for pattrens of the form:                `x = t /\ P`.
+  When we spot this pattern, we can continue with: `x = t /\ P (t/x)`.
+
+  The benfit of this is that now `P` does not mention `x`, which results
+  in less work when eliminating quantifiers (e.g., `lcmDiv` will be smaller). -}
+
+  tryEqOpt lcmCoeff lcmDiv fo
+    = let (eqs,others) = partition (isEq x) (splitAnd fo)
+      in case eqs of
+           AtomF a : more ->
+             -- RECURSIONL cf. lcmCoeffFinal
+             let Just (lcmCoeff', _, a') = aCt x lcmCoeffFinal lcmCoeff lcmDiv a
+             in (lcmCoeff', lcmDiv, mkAnd a' (more ++ others))
+           _ -> go False lcmCoeff lcmDiv fo
+
+  -- Construct formula when equality optimization kicked in.
+  mkAnd a [] = CtAtomF a
+  mkAnd a fs =
+    let AtomCt _ _ _ t = a
+    in CtConnF And (Fo $ foldl1 (ConnF And) $ map (fLet x t) fs) (CtAtomF a)
+
+-- | Is this an equality constraint for the given variable?
+isEq :: Name -> Fo -> Bool
+isEq x (AtomF (Atom Pos Eq lhs rhs)) = tCoeff x lhs /= 0 || tCoeff x rhs /= 0
+isEq _ _ = False
+
+-- | Split a formula into its conjuncts.  Always returns at least one element.
+splitAnd :: Fo -> [Fo]
+splitAnd f0 = go f0 []
+  where
+  go (ConnF And f1 f2) more = go f1 (go f2 more)
+  go f more                 = f : more
 
 -- | Given some constraints, collect the upper/lower bound restrictions on
 -- them.  We have a strategy that can use either the lower bounds or the
@@ -191,7 +251,7 @@ negInfAtom j (DivCt pol m _ t)   = Div pol m (j |+| t)
 -- | Case when variable gets arbitrarily large.
 posInfAtom :: Integer -> Ct -> Atom
 posInfAtom _ (AtomCt pol _ _ _) = Bool $ case pol of
-                                           Pos -> False -- eq, lt, leq: all False
+                                           Pos -> False -- eq,lt,leq: all False
                                            Neg -> True  -- negations are true
 posInfAtom j (DivCt p m _ t)    = Div p m (j |+| t)
 
