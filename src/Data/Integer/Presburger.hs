@@ -1,19 +1,20 @@
 {-# LANGUAGE Safe #-}
 module Data.Integer.Presburger
   ( Formula
-  , bool, true, false, (/\), (\/), (==>), neg, ite
+  , bool, true, false, (/\), (\/), (==>), (<==>), neg, ite, divides
   , (|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|)
   , forAll, exists
+  , fLet
 
   , Term
-  , T.Name, tVar, (|*|), tITE
+  , T.Name, tVar, (|*|), tITE, tLet
 
   , isTrue, isSat, isValid
   ) where
 
 import qualified Data.Integer.Presburger.Term as T
-import qualified Data.Integer.Presburger.Atom as A
-import           Data.IntSet (IntSet)
+import qualified Data.Integer.Presburger.Formula as A
+import qualified Data.Integer.Presburger.Exists as E
 import qualified Data.IntSet as Set
 
 
@@ -47,7 +48,7 @@ tBin f t (ITE p t1 t2) = ITE p (tBin f t t1) (tBin f t t2)
 
 -- | A constant formula.
 bool :: Bool -> Formula
-bool b = F $ A.AtomF $ A.Bool b
+bool b = F $ A.fAtom $ A.mkBool b
 
 -- | A true statement.
 true :: Formula
@@ -59,34 +60,22 @@ false = bool False
 
 -- | Conjunction.
 (/\) :: Formula -> Formula -> Formula
-F p /\ F q  = F (A.ConnF A.And p q)
+F p /\ F q  = F (A.fConn A.And p q)
 
 -- | Disjunction.
 (\/) :: Formula -> Formula -> Formula
-F p \/ F q = F (A.ConnF A.Or p q)
+F p \/ F q = F (A.fConn A.Or p q)
 
 -- | Implication.
 (==>) :: Formula -> Formula -> Formula
 p ==> q = neg p \/ q
 
+(<==>) :: Formula -> Formula -> Formula
+p <==> q = (p ==> q) /\ (q ==> p)
+
 -- | Negation.
 neg :: Formula -> Formula
-neg (F fo) = F (negF fo)
-  where
-  negC A.And                = A.Or
-  negC A.Or                 = A.And
-
-  negP A.Pos                = A.Neg
-  negP A.Neg                = A.Pos
-
-  negF (A.ConnF c f1 f2)    = A.ConnF (negC c) (negF f1) (negF f2)
-  negF (A.AtomF a)          = A.AtomF (negA a)
-
-  negA (A.Bool b)           = A.Bool (not b)
-  negA (A.Atom pol op t1 t2)= A.Atom (negP pol) op t1 t2
-  negA (A.Div  pol m t)     = A.Div  (negP pol) m t
-
-
+neg (F fo) = F (A.fNeg fo)
 
 -- | If-then-else.
 ite :: Formula -> Formula -> Formula -> Formula
@@ -104,6 +93,17 @@ tVar x = T (T.tVar x)
 -- | If-then-else term
 tITE :: Formula -> Term -> Term -> Term
 tITE = ITE
+
+-- | Define a variable in a term.
+tLet :: T.Name -> Term -> Term -> Term
+tLet x (ITE f t e) t1 = tITE f (tLet x t t1) (tLet x e t1)
+tLet x t (ITE f t1 e) = tITE f (tLet x t t1) (tLet x t e)
+tLet x (T t1) (T t2)  = T (T.tLet x t1 t2)
+
+-- | Define a term-varibale in a formula.
+fLet :: T.Name -> Term -> Formula -> Formula
+fLet x (T t)       (F fo) = F (A.fLet x t fo)
+fLet x (ITE f t e) fo     = ite f (fLet x t fo) (fLet x e fo)
 
 -- | Assert that terms are the same.
 (|==|) :: Term -> Term -> Formula
@@ -130,44 +130,36 @@ t1 |>| t2 = neg (t1 |<=| t2)
 t1 |>=| t2 = neg (t1 |<| t2)
 
 atom :: A.PredS -> Term -> Term -> Formula
-atom op (T t1) (T t2) = F $ A.AtomF $ A.Atom A.Pos op lhs rhs
+atom op (T t1) (T t2) = F $ A.fAtom $ A.mkAtom A.Pos op lhs rhs
   where (lhs,rhs) = T.tSplit (t2 - t1)
 atom op (ITE f t1 t2) t = ite f (atom op t1 t) (atom op t2 t)
 atom op t (ITE f t1 t2) = ite f (atom op t t1) (atom op t t2)
 
+-- | Assert that the given integer divides the term.
+divides :: Integer -> Term -> Formula
+divides 0 t = t |==| 0
+divides m (T t)         = F $ A.fAtom $ A.mkDiv A.Pos (abs m) t
+divides m (ITE f t1 t2) = ite f (divides m t1) (divides m t2)
+
 exists :: [T.Name] -> Formula -> Formula
-exists xs (F f) = F (A.exists xs f)
+exists xs (F f) = F (E.exists xs f)
 
 forAll :: [T.Name] -> Formula -> Formula
 forAll xs f = neg $ exists xs $ neg f
 
 
 --------------------------------------------------------------------------------
-
-freeVars :: Formula -> IntSet
-freeVars (F fo0) = freeVarsF fo0
-  where
-  freeVarsF fo =
-    case fo of
-      A.ConnF _ f1 f2 -> Set.union (freeVarsF f1) (freeVarsF f2)
-      A.AtomF a       -> freeVarsA a
-
-  freeVarsA at =
-    case at of
-      A.Bool _          -> Set.empty
-      A.Div _ _ t       -> T.tVars t
-      A.Atom _ _ t1 t2  -> Set.union (T.tVars t1) (T.tVars t2)
-
 -- | Check if there is an integer assignment that can make the statement true.
 isSat :: Formula -> Bool
 isSat f = case isTrue $ exists (Set.toList (freeVars f)) f of
             Just b  -> b
             Nothing -> error "isSat encountered a free variable"
+  where freeVars (F fo) = A.freeVars fo
 
 -- | Check if the statement is is for any integer assignment.
 isValid :: Formula -> Bool
 isValid = not . isSat . neg
 
 isTrue :: Formula -> Maybe Bool
-isTrue (F fo) = A.isTrue fo
+isTrue (F fo) = A.isBool =<< A.isFAtom fo
 

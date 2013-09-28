@@ -1,5 +1,20 @@
 {-# LANGUAGE Safe, PatternGuards #-}
-module Data.Integer.Presburger.Term where
+module Data.Integer.Presburger.Term
+  ( PP(..)
+  , pp
+  , Name
+  , Term
+  , tVar
+  , tSplit
+  , tSplitVar
+  , tCoeff
+  , isConst
+  , (|+|)
+  , (|*|)
+  , tLet
+  , tLetNum
+  , tVars
+  ) where
 
 import qualified Data.IntMap as Map
 import           Data.IntMap (IntMap)
@@ -90,17 +105,12 @@ k |*| T n m = T (k * n) (fmap (k *) m)
 (|+|) :: Integer -> Term -> Term
 k |+| T n m = T (k + n) m
 
-
-
--- | Remove occurances of a variable from the term.
-tDrop :: Name -> Term -> Term
-tDrop x (T n m) = T n (Map.delete x m)
-
 -- | Get the coefficient of a term.  Returns 0 if the variable does not occur.
 tCoeff :: Name -> Term -> Integer
 tCoeff x (T _ m) = Map.findWithDefault 0 x m
 
 -- | Remove a variable from the term, and return its coefficient.
+-- If the variable is not present in the term, the coefficient is 0.
 tSplitVar :: Name -> Term -> (Integer, Term)
 tSplitVar x t@(T n m) =
   case Map.updateLookupWithKey (\_ _ -> Nothing) x m of
@@ -115,11 +125,13 @@ tSplit (T k m) =
       (k1,k2) = if k > 0 then (k,0) else (0,k)
   in (negate (T k2 m2), T k1 m1)
 
+-- | Is this terms just an integer.
 isConst :: Term -> Maybe Integer
 isConst (T n m)
   | Map.null m  = Just n
   | otherwise   = Nothing
 
+-- | The variables mentioned in this term.
 tVars :: Term -> IntSet
 tVars (T _ m) = Map.keysSet m
 

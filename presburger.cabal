@@ -18,7 +18,8 @@ library
     Data.Integer.Presburger
   Other-modules:
     Data.Integer.Presburger.Term
-    Data.Integer.Presburger.Atom
+    Data.Integer.Presburger.Exists
+    Data.Integer.Presburger.Formula
     Data.Integer.Presburger.Div
 
   GHC-options:    -O2 -Wall
