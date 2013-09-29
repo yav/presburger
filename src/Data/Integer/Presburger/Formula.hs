@@ -1,28 +1,29 @@
 {-# LANGUAGE Safe #-}
 module Data.Integer.Presburger.Formula
   ( Formula
-  , fConn, fConns, fAtom, fLet, fNeg
-  , isFConn, isFAtom, splitConn
-  , Atom
-  , mkAtom, mkDiv, mkBool
-  , isAtom, isDiv, isBool
+  , fConn
+  , fConns
+  , fAtom
+  , fLet
+  , fNeg
   , Conn(..)
   , Pol(..)
   , PredS(..)
-  , freeVars
+  , Atom
+  , mkAtom
+  , mkDiv
+  , mkBool
+  , isFConn, isFAtom, splitConn
+  , isAtom, isDiv, isBool
   , evalPol
   )
   where
 
-import Data.Integer.Presburger.Term (Term, Name
-                                    , PP(..), pp, tLet, tSplit, tVars
-                                    , isConst
-                                    )
+import Data.Integer.Presburger.Term
+  (Term, Name, PP(..), pp, tLet, tSplit, isConst)
 
 import Text.PrettyPrint
-import           Data.IntSet (IntSet)
-import qualified Data.IntSet as Set
-import           Control.Monad(liftM2)
+import Control.Monad(liftM2)
 
 -- | Formulas.
 data Formula  = AtomF Atom
@@ -150,21 +151,6 @@ isDiv _           = Nothing
 isBool :: Atom -> Maybe Bool
 isBool (Bool a) = Just a
 isBool _        = Nothing
-
-
-freeVars :: Formula -> IntSet
-freeVars fo =
-  case fo of
-    ConnF _ f1 f2 -> Set.union (freeVars f1) (freeVars f2)
-    AtomF a       -> freeVarsA a
-
-  where
-  freeVarsA at =
-    case at of
-      Bool _          -> Set.empty
-      Div _ _ t       -> tVars t
-      Atom _ _ t1 t2  -> Set.union (tVars t1) (tVars t2)
-
 
 
 --------------------------------------------------------------------------------

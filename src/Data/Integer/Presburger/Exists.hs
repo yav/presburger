@@ -6,10 +6,6 @@ module Data.Integer.Presburger.Exists(exists) where
 
 import Data.Integer.Presburger.Term
 import Data.Integer.Presburger.Formula
-import Data.List(partition)
-import Control.Monad((<=<))
-
-
 
 {-| A type used while eliminating the quantifier for a variable.
 The atoms are normalized so that the variable is on its own and has
@@ -22,6 +18,26 @@ data CtFo     = Fo Formula              -- ^ The varibale does not appear here
 so that we generate the constraint in a single pass. -}
 data Ct       = AtomCt Pol PredS   Name Term    -- ^ @x `op` t@
               | DivCt  Pol Integer Name Term    -- ^ @k | (x + t)@
+
+{- | Construct formulas so that parts that do not mention the quantified
+variabele float to the front. -}
+ctConn :: Conn -> CtFo -> CtFo -> CtFo
+ctConn c (Fo lf) (CtConnF c' (Fo rf) rest)
+  | c == c'           = CtConnF c (Fo (fConn c lf rf)) rest
+
+-- Quantifiers commute
+ctConn c (CtConnF c' (Fo lf) rest) (Fo rf)
+  | c == c'           = CtConnF c (Fo (fConn c lf rf)) rest
+
+ctConn c (CtConnF c' (Fo lf) rest) (CtConnF c'' (Fo rf) rest')
+  | c == c' && c == c'' = CtConnF c (Fo (fConn c lf rf))
+                                    (CtConnF c rest rest')
+
+ctConn c lf rf@(Fo _) = CtConnF c rf lf
+
+ctConn c lf rf        = CtConnF c lf rf
+
+
 
 
 -- | Collect all constraints in a constraint-formula.
@@ -46,7 +62,7 @@ ctAtoms f ctfo =
 {- | Transform an atom so that the variable is on the LHS with coefficient 1.
 If the variable is not mentioned in the atom, then it is left unchanged,
 and we return 'Nothing'. Otherwise, we update the LCMs of coeffieicnts
-and divisors as necessary, and compute a normalized constraint. -}
+and compute a normalized constraint. -}
 
 -- 5 * x = 10
 -- x = 2
@@ -54,24 +70,21 @@ and divisors as necessary, and compute a normalized constraint. -}
 aCt :: Name    ->   -- ^ Variable.
        Integer ->   -- ^ LCM of all coefficients for the variable (LAZY).
        Integer ->   -- ^ Partial LCM of coefficients.
-       Integer ->   -- ^ Partial LCM of divisors.
        Atom    ->   -- ^ Constraint to be normalizied.
-       Maybe (Integer, Integer, Ct)
-       -- ^ (Updated LCM of coefficients, updated LCM of divisors, constraint)
+       Maybe (Integer, Ct)
+       -- ^ (Updated LCM of coefficients, constraint)
 
 -- Does it occur on the left?
-aCt x lcmCoeffFinal lcmCoeff lcmDiv (isAtom -> Just (pol,op,lhs,rhs))
+aCt x lcmCoeffFinal lcmCoeff (isAtom -> Just (pol,op,lhs,rhs))
   | k /= 0 = Just ( lcm k lcmCoeff
-                  , lcmDiv
                   , AtomCt pol op x (div lcmCoeffFinal k |*| (rhs - lRest))
                   )
   where
   (k, lRest) = tSplitVar x lhs
 
 -- Does it occur on the right?
-aCt x lcmCoeffFinal lcmCoeff lcmDiv (isAtom -> Just (pol,op,lhs,rhs))
+aCt x lcmCoeffFinal lcmCoeff (isAtom -> Just (pol,op,lhs,rhs))
   | k /= 0 = Just ( lcm k lcmCoeff
-                  , lcmDiv
                   , AtomCt newP newOp x (div lcmCoeffFinal k |*| (lhs - rRest))
                   )
   where
@@ -94,17 +107,16 @@ aCt x lcmCoeffFinal lcmCoeff lcmDiv (isAtom -> Just (pol,op,lhs,rhs))
 -- Does it occur in a divisibility constraint?
 -- m | (k * x + t) <=> abs (sc * m) | (sc * k * x + sc * t)
 -- where sc * k = lcmCoeffFinal
-aCt x lcmCoeffFinal lcmCoeff lcmDiv (isDiv -> Just (p,m,t))
+aCt x lcmCoeffFinal lcmCoeff (isDiv -> Just (p,m,t))
   | k /= 0  = let sc = div lcmCoeffFinal k
                   m1 = abs (m * sc)
               in Just ( lcm lcmCoeff k
-                      , lcm lcmDiv m1
                       , DivCt p m1 x (sc |*| rest)
                       )
   where (k,rest) = tSplitVar x t
 
 -- It does not occur anywhere.
-aCt _ _ _ _ _ = Nothing
+aCt _ _ _ _ = Nothing
 
 
 {-| Normalize a formula with respect to a particular variable.
@@ -114,16 +126,36 @@ Example: @2x > 5 --> x > 10@
 
 As a result we return:
     * the LCM of all coefficients of the variables,
-    * the LCM of all divisors where the (new) variable is mentioned,
     * Parts of the formula that do not mention the variable are
       tagged with 'Fo'.
 -}
-aCts :: Name -> Formula -> (Integer, Integer, CtFo)
-aCts x form = ( lcmCoeffFinal, lcm lcmDivFinal lcmCoeffFinal
-              , mkConn' And foFinal (CtAtomF $ DivCt Pos lcmCoeffFinal x 0)
+aCts :: Name -> Formula -> (Integer, CtFo)
+aCts x form = ( lcmCoeffFinal
+              , ctConn And foFinal (CtAtomF $ DivCt Pos lcmCoeffFinal x 0)
               )
   where
-  (lcmCoeffFinal,lcmDivFinal,foFinal) = go True 1 1 form
+  (lcmCoeffFinal,foFinal) = go True 1 form
+
+  go _ lcmCoeff f
+    | Just a <- isFAtom f =
+    case aCt x lcmCoeffFinal lcmCoeff a of -- RECURSION: cf lcmCoeffFinal
+      Just (lcmCoeff', ct) -> (lcmCoeff', CtAtomF ct)
+      Nothing              -> (lcmCoeff,  Fo f)
+
+  go _ lcmCoeff f
+    | ~(Just (c,l,r)) <- isFConn f =
+    case go (c == Or) lcmCoeff l of
+      (lcmCoeff1, l') ->
+         case go (c == Or) lcmCoeff1 r of
+           (lcmCoeff2, r') ->
+              case (l',r') of
+                (Fo _,Fo _) -> (lcmCoeff, Fo f)
+                _           -> (lcmCoeff2, ctConn c l' r')
+
+
+computeDelta :: CtFo -> (Integer, CtFo)
+computeDelta = go True 1
+  where
 
   {- The boolean paramter to 'go' indicates if we should try the equality
      optimization. We implement this in `tryEqOpt` which flattens
@@ -133,41 +165,17 @@ aCts x form = ( lcmCoeffFinal, lcm lcmDivFinal lcmCoeffFinal
      when we go under a disjunction.
   -}
 
-  go _ lcmCoeff lcmDiv f
-    | Just a <- isFAtom f =
-    case aCt x lcmCoeffFinal lcmCoeff lcmDiv a of -- RECURSION: cf lcmCoeffFinal
-      Just (lcmCoeff', lcmDiv', ct) -> (lcmCoeff', lcmDiv', CtAtomF ct)
-      Nothing                       -> (lcmCoeff,  lcmDiv,  Fo f)
 
-  -- Try equality optimization.
-  go True lcmCoeff lcmDiv f
-    | Just (And,_,_) <- isFConn f = tryEqOpt lcmCoeff lcmDiv f
+  go opt !lcmDiv fo =
+    case fo of
+      CtAtomF (DivCt _ m _ _)   -> (lcm m lcmDiv, fo)
+      CtConnF And f1 f2 | opt   -> tryEqOpt lcmDiv f1 [f2] []
+      CtConnF c f1 f2           -> let (lcmDiv1, f1') = go (c == Or) lcmDiv  f1
+                                       (lcmDiv2, f2') = go (c == Or) lcmDiv1 f2
 
-  go _ lcmCoeff lcmDiv f
-    | ~(Just (c,l,r)) <- isFConn f =
-    case go (c == Or) lcmCoeff lcmDiv l of
-      (lcmCoeff1, lcmDiv1, l') ->
-         case go (c == Or) lcmCoeff1 lcmDiv1 r of
-           (lcmCoeff2, lcmDiv2, r') ->
-              case (l',r') of
-                (Fo _,Fo _) -> (lcmCoeff, lcmDiv, Fo f)
-                _           -> (lcmCoeff2, lcmDiv2, mkConn' c l' r')
-
-  -- Construct formulas so that parts that do not mention the quantified
-  -- variabele float to the front.
-  mkConn' c (Fo lf) (CtConnF c' (Fo rf) rest)
-    | c == c'           = CtConnF c (Fo (fConn c lf rf)) rest
-
-  mkConn' c (CtConnF c' (Fo lf) rest) (Fo rf)
-    | c == c'           = CtConnF c (Fo (fConn c lf rf)) rest
-
-  mkConn' c (CtConnF c' (Fo lf) rest) (CtConnF c'' (Fo rf) rest')
-    | c == c' && c == c'' = CtConnF c (Fo (fConn c lf rf))
-                                      (CtConnF c rest rest')
-
-  mkConn' c lf rf@(Fo _) = CtConnF c rf lf
-
-  mkConn' c lf rf        = CtConnF c lf rf
+                                   in (lcmDiv2, ctConn c f1' f2')
+      Fo _                      -> (lcmDiv, fo)
+      CtAtomF _                 -> (lcmDiv, fo)
 
   {- The Equality Optmization
 
@@ -177,26 +185,17 @@ aCts x form = ( lcmCoeffFinal, lcm lcmDivFinal lcmCoeffFinal
   The benfit of this is that now `P` does not mention `x`, which results
   in less work when eliminating quantifiers (e.g., `lcmDiv` will be smaller). -}
 
-  tryEqOpt lcmCoeff lcmDiv fo
-    = let (eqs,others) = partition (isEq x) (splitConn And fo)
-      in case eqs of
-           (isFAtom -> Just a) : more ->
-             -- RECURSIONL cf. lcmCoeffFinal
-             let Just (lcmCoeff', _, a') = aCt x lcmCoeffFinal lcmCoeff lcmDiv a
-             in (lcmCoeff', lcmDiv, mkAnd a' (more ++ others))
-           _ -> go False lcmCoeff lcmDiv fo
+  tryEqOpt d fo@(CtAtomF (AtomCt Pos Eq _ t)) todo done =
+    (d, case todo ++ done of
+          []   -> fo
+          more -> CtConnF And (Fo $ foldl1 (fConn And)
+                                    (map (addDef t) more)) fo)
 
-  -- Construct formula when equality optimization kicked in.
-  mkAnd a [] = CtAtomF a
-  mkAnd a fs =
-    let AtomCt _ _ _ t = a
-    in CtConnF And (Fo $ foldl1 (fConn And) $ map (fLet x t) fs) (CtAtomF a)
+  tryEqOpt d (CtConnF And f1 f2) todo done = tryEqOpt d f1 (f2 : todo) done
+  tryEqOpt d f (f1 : todo) done = tryEqOpt d f1 todo (f : done)
+  tryEqOpt d f [] done          = go False d (foldl (CtConnF And) f done)
 
--- | Is this an equality constraint for the given variable?
-isEq :: Name -> Formula -> Bool
-isEq x (isAtom <=< isFAtom -> Just (Pos,Eq,lhs,rhs))
-         = tCoeff x lhs /= 0 || tCoeff x rhs /= 0
-isEq _ _ = False
+  addDef t ctfo = ctAtoms (letAtom t) ctfo
 
 -- | Given some constraints, collect the upper/lower bound restrictions on
 -- them.  We have a strategy that can use either the lower bounds or the
@@ -271,7 +270,8 @@ ex x fo
           [ ctAtoms (letAtom (negate j |+| a)) ctFo
           | j <- [ 1 .. delta ], a <- upperBounds ]
   where
-  (_coeff, delta, ctFo) = aCts x fo
+  (_coeff, ctFo0) = aCts x fo
+  (delta, ctFo)   = computeDelta ctFo0
 
 exists :: [Name] -> Formula -> Formula
 exists xs f = foldr ex f xs
