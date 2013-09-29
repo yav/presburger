@@ -1,9 +1,7 @@
+{- The first examples are Translated from:
+HOL/ex/PresburgerEx.thy by Amine Chaieb, TU Muenchen
 
-
-
-{- Translated from:
-Title:      HOL/ex/PresburgerEx.thy
-Author:     Amine Chaieb, TU Muenchen
+We added more as needed.
 -}
 
 import Data.Integer.Presburger
@@ -15,6 +13,9 @@ allOk = all isTrue [ ex1, ex2, ex3, ex4, ex5
                    , ex6, ex7, ex8, ex9, ex10
                    ,      ex12, ex13, ex14, ex15
                    , ex16, ex17, ex18, ex19, ex20
+
+                   , ex30, ex31, ex32, ex33, ex34
+                   , ex35, ex36, 37
                    ]
 
 
@@ -86,9 +87,6 @@ ex21 = forAll $ \x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 ->
         x1 |==| x10 /\ x2 |==| x11
 
 
-letDivMod t m p = exists $ \q r ->
-  0 |<=| r /\ r |<| fromInteger m /\ m |*| q + r |==| t /\ p q r
-
 ex30 = bForAll nat $ \emBits ->
        letDivMod emBits 8 $ \q r ->
        0 |<| r ==> 8 + q * 8 - emBits |==| 8 - r
@@ -124,5 +122,12 @@ ex35 = bForAll nat $ \m n i j ja e ->
   (bExists nat $ \m ->
   bForAll nat $ \ja ia ->
     m |<=| ja ==> tITE (j |==| ja /\ i |==| ia) e 0 |==| 0)
+
+ex36 = letDivMod 5 2 $ \q r -> q |==| 2 /\ r |==| 1
+ex37 = forAll $ \x -> neg $ letDivMod x 0 $ \_ _ -> true
+
+
+
+
 
 
