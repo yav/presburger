@@ -15,7 +15,7 @@ allOk = all isTrue [ ex1, ex2, ex3, ex4, ex5
                    , ex16, ex17, ex18, ex19, ex20
 
                    , ex30, ex31, ex32, ex33, ex34
-                   , ex35, ex36, 37
+                   , ex35, ex36, ex37
                    ]
 
 
