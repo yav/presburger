@@ -4,6 +4,7 @@ module Data.Integer.Presburger
   ( Formula
   , bool, true, false, (/\), (\/), (==>), (<==>), neg, ite, divides
   , (|==|), (|/=|), (|<|), (|<=|), (|>|), (|>=|)
+  , letDivMod
   , nat
   , forAll, bForAll, exists, bExists
 
@@ -16,7 +17,6 @@ module Data.Integer.Presburger
 import qualified Data.Integer.Presburger.Term as T
 import qualified Data.Integer.Presburger.Formula as A
 import qualified Data.Integer.Presburger.Exists as E
-
 
 infixr 1 ==>
 infixr 2 \/
@@ -125,6 +125,15 @@ divides :: Integer -> Term -> Formula
 divides 0 t = t |==| 0
 divides m (T t)         = F 0 $ A.fAtom $ A.mkDiv A.Pos (abs m) t
 divides m (ITE f t1 t2) = ite f (divides m t1) (divides m t2)
+
+{- | Simluate division and reminder.
+@letDivMod t m $ \q r -> p@ asserts that when we divide @t@ by @m@
+we get quotiont @q@ and reminder @r@, and also `p` holds. -}
+
+letDivMod :: Term -> Integer -> (Term -> Term -> Formula) -> Formula
+letDivMod t m p = exists $ \q r ->
+  0 |<=| r /\ r |<| fromInteger m /\ m |*| q + r |==| t /\ p q r
+
 
 class Quantifiable t where
   quantify :: ([Term] -> Formula -> Formula) -- This is used to tweak the
