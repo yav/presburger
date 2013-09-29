@@ -86,52 +86,43 @@ ex21 = forAll $ \x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 ->
         x1 |==| x10 /\ x2 |==| x11
 
 
+letDivMod t m p = exists $ \q r ->
+  0 |<=| r /\ r |<| fromInteger m /\ m |*| q + r |==| t /\ p q r
 
-{-
-lemma "\<And>m n ja ia. [| ~ m <=  j;
-                                 ~ (n::nat) <=  i;
-                                 (e::nat) /= 0;
-                                 Suc j <=  ja|] 
-    ==>  exists m. forall ja ia. m <=  ja -->  (if j = ja && i = ia then e else 0) = 0" by presburger
+ex30 = bForAll nat $ \emBits ->
+       letDivMod emBits 8 $ \q r ->
+       0 |<| r ==> 8 + q * 8 - emBits |==| 8 - r
+
+--hm?
+ex31 = bForAll nat $ \x ->
+       bExists nat $ \y ->
+       y |==| 5 + x \/
+       letDivMod x 6 (\q _ -> q + 1 |==| 2)
+
+ex32 = bForAll nat $ \x ->
+       bExists nat $ \y ->
+       letDivMod x 6 (\q _ ->
+       y |==| 5 + x \/  q + 1 |==| 2)
+
+ex33 = bForAll nat $ \n -> (bExists nat $ \m -> n |==| 2 * m) ==>
+                           (letDivMod (n + 1) 2 $ \q1 _ ->
+                            letDivMod n       2 $ \q2 _ ->
+                            q1 |==| q2)
+
+ex34 = neg $ forAll $ \x ->
+  (divides 2 x <==> (forAll $ \y -> x |/=| 2 * y + 1)) \/
+  (exists $ \q u i -> 3 * i + 2 * q - u |<| 17)
+  ==> 0 |<| x \/ (neg (divides 3 x) /\ (x + 8 |==| 0))
 
 
-lemma "(0::nat) < emBits mod 8 ==>  8 + emBits div 8 * 8 - emBits = 8 - emBits mod 8" 
-by presburger
-
-lemma "(0::nat) < emBits mod 8 ==>  8 + emBits div 8 * 8 - emBits = 8 - emBits mod 8" 
-by presburger
--}
-
-{-
-
-
-
-text{*Slow: about 7 seconds on a 1.6GHz machine.*}
-theorem "forall (x::nat). exists (y::nat). y = 5 + x | x div 6 + 1= 2"
-  by presburger
+ex35 = bForAll nat $ \m n i j ja e ->
+  neg (m |<=| j) /\
+  neg (n |<=| i) /\
+  e |/=| 0 /\
+  1 + j |<=| ja
+  ==>
+  (bExists nat $ \m ->
+  bForAll nat $ \ja ia ->
+    m |<=| ja ==> tITE (j |==| ja /\ i |==| ia) e 0 |==| 0)
 
 
-theorem "~ (forall (x::int). 
-            ((2 dvd x) = (forall (y::int). x /= 2*y+1) | 
-             (exists (q::int) (u::int) i. 3*i + 2*q - u < 17)
-             --> 0 < x | ((~ 3 dvd x) &(x + 8 = 0))))"
-  by presburger
- 
-text{*Slow: about 5 seconds on a 1.6GHz machine.*}
-theorem "(exists m::nat. n = 2 * m) --> (n + 1) div 2 = n div 2"
-  by presburger
-
-text{* This following theorem proves that all solutions to the
-recurrence relation $x_{i+2} = |x_{i+1}| - x_i$ are periodic with
-period 9.  The example was brought to our attention by John
-Harrison. It does does not require Presburger arithmetic but merely
-quantifier-free linear arithmetic and holds for the rationals as well.
-
-Warning: it takes (in 2006) over 4.2 minutes! *}
-
-lemma "[|  x3 = abs x2 - x1; x4 = abs x3 - x2; x5 = abs x4 - x3;
-         x6 = abs x5 - x4; x7 = abs x6 - x5; x8 = abs x7 - x6;
-         x9 = abs x8 - x7; x10 = abs x9 - x8; x11 = abs x10 - x9 |] 
- ==>  x1 = x10 & x2 = (x11::int)"
-by arith
--}
