@@ -81,13 +81,13 @@ fConn :: Conn -> Formula -> Formula -> Formula
 
 fConn And f1@(AtomF (Bool False)) _                        = f1
 fConn And    (AtomF (Bool True))  f2                       = f2
-fConn And _                       f2@(AtomF (Bool False))  = f2
-fConn And f1                         (AtomF (Bool True))   = f1
+-- fConn And _                       f2@(AtomF (Bool False))  = f2
+-- fConn And f1                         (AtomF (Bool True))   = f1
 
 fConn Or  f1@(AtomF (Bool True))  _                        = f1
 fConn Or     (AtomF (Bool False)) f2                       = f2
-fConn Or  _                       f2@(AtomF (Bool True))   = f2
-fConn Or  f1                         (AtomF (Bool False))  = f1
+-- fConn Or  _                       f2@(AtomF (Bool True))   = f2
+-- fConn Or  f1                         (AtomF (Bool False))  = f1
 
 fConn c f1 f2 = ConnF c f1 f2
 
