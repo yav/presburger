@@ -219,20 +219,20 @@ getBounds = go (0::Int) [] []
 
 
 -- | Case when variable gets arbitrarily small.
-fNegInfAtom :: Integer -> Ct -> Atom
+fNegInfAtom :: Term -> Ct -> Atom
 fNegInfAtom _ (AtomCt pol op _ _) = mkBool $ evalPol pol $ case op of
                                                              Eq  -> False
                                                              Lt  -> True
                                                              Leq -> True
-fNegInfAtom j (DivCt pol m _ t)   = mkDiv pol m (j |+| t)
+fNegInfAtom j (DivCt pol m _ t)   = mkDiv pol m (j + t)
 
 
 -- | Case when variable gets arbitrarily large.
-posInfAtom :: Integer -> Ct -> Atom
+posInfAtom :: Term -> Ct -> Atom
 posInfAtom _ (AtomCt pol _ _ _) = mkBool $ case pol of
                                              Pos -> False -- eq,lt,leq:all False
                                              Neg -> True  -- fNegations are true
-posInfAtom j (DivCt p m _ t)    = mkDiv p m (j |+| t)
+posInfAtom j (DivCt p m _ t)    = mkDiv p m (j + t)
 
 -- | Replace the variable in a constraint with the given term.
 letAtom :: Term -> Ct -> Atom
@@ -256,7 +256,7 @@ ex x fo
       case getBounds (getCts ctFo []) of
         Left lowerBounds  ->
           fConns Or $
-          [ ctAtoms (fNegInfAtom j) ctFo
+          [ ctAtoms (fNegInfAtom $ fromInteger j) ctFo
           | j <- [ 1 .. delta ] ]
           ++
           [ ctAtoms (letAtom (j |+| b)) ctFo
@@ -264,7 +264,7 @@ ex x fo
 
         Right upperBounds ->
           fConns Or $
-          [ ctAtoms (posInfAtom (negate j)) ctFo
+          [ ctAtoms (posInfAtom (fromInteger (negate j))) ctFo
           | j <- [ 1 .. delta ] ]
           ++
           [ ctAtoms (letAtom (negate j |+| a)) ctFo
