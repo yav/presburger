@@ -38,7 +38,7 @@ instance Num Term where
   (-)             = tBin (-)
   (*)             = tBin (*)
   abs x           = tITE (x |>=| 0) x (negate x)
-  signum x        = tITE (x |<| 0) (-1) (tITE (x |>| 0) 1 x)
+  signum x        = tITE (x |<| 0) (-1) (tITE (x |>| 0) 1 0)
 
 -- For lifting binary operations
 tBin :: (T.Term -> T.Term -> T.Term) -> Term -> Term -> Term
