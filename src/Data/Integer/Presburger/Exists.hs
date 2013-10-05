@@ -2,10 +2,12 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternGuards #-}
-module Data.Integer.Presburger.Exists(exists) where
+module Data.Integer.Presburger.Exists(exists,existsTop) where
 
 import Data.Integer.Presburger.Term
 import Data.Integer.Presburger.Formula
+import Data.Integer.Presburger.Div(DivCt,solve)
+import Data.Maybe(mapMaybe)
 
 {-| A type used while eliminating the quantifier for a variable.
 The atoms are normalized so that the variable is on its own and has
@@ -276,9 +278,54 @@ ex x fo
 exists :: [Name] -> Formula -> Formula
 exists xs f = foldr ex f xs
 
+
+{- | We use this for outermost quantifiers, which assumes no free variables
+in the formula. -}
+existsTop :: [Name] -> Formula -> Formula
+existsTop [] fo = fo
+existsTop xs fo
+  | Just (Or, f1, f2) <- isFConn fo = fConn Or (existsTop xs f1)
+                                               (existsTop xs f2)
+existsTop xs fo = fConns Or $ map expandTopFo $ foldr exTops [TopFo [] fo] xs
+
+data TopFo = TopFo [(Name,Integer)] Formula
+
+expandTopFo :: TopFo -> Formula
+expandTopFo (TopFo ds fo) = fConns Or $ map (`fLetNums` fo)
+                                      $ solve ds $ findDivCts fo
+
+findDivCts :: Formula -> [DivCt]
+findDivCts = mapMaybe isDivCt . splitConn And
+  where isDivCt fo = do a <- isFAtom fo
+                        (Pos,m,t) <- isDiv a
+                        return (m,t)
+
+
+exTops :: Name -> [TopFo] -> [TopFo]
+exTops x = concatMap (exTop x)
+
+exTop :: Name -> TopFo -> [TopFo]
+exTop x it@(TopFo ds fo) =
+  case ctFo of
+    Fo _ -> [it] -- Did not mention variable, nothing to do.
+    _    -> map topFo $
+      case getBounds (getCts ctFo []) of
+        Left lowerBounds  ->
+                ctAtoms (fNegInfAtom $ tVar x) ctFo
+            : [ ctAtoms (letAtom (tVar x + b)) ctFo | b <- lowerBounds ]
+
+        Right upperBounds ->
+                ctAtoms (posInfAtom $ negate (tVar x)) ctFo
+           : [ ctAtoms (letAtom (negate (tVar x) + a)) ctFo | a <- upperBounds ]
+  where
+  (_coeff, ctFo0) = aCts x fo
+  (delta, ctFo)   = computeDelta ctFo0
+  topFo f         = TopFo ((x,delta) : ds) f
+
+
+
 instance Show Ct where
   showsPrec p = showsPrec p . toAtom
-
 instance Show CtFo where
   showsPrec p = showsPrec p . ctAtoms toAtom
 

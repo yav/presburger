@@ -141,6 +141,9 @@ class Quantifiable t where
                                              -- and assertions about domain
            -> t -> Formula
 
+instance Quantifiable Bool where
+  quantify f k = f [] (bool k)
+
 instance Quantifiable Formula where
   quantify f k = f [] k
 
@@ -151,7 +154,9 @@ instance Quantifiable t => Quantifiable (Term -> t) where
     term       = T $ T.tVar name
     name       = 1 + mx
 
-
+-- | WARNING: mixing evaluation with formula construction
+-- may lead to capture!
+-- > test = exists $ \x -> bool $ isTrue $ forAll $ \y -> x |==| y
 exists :: Quantifiable formula => (Term -> formula) -> Formula
 exists p = quantify (\_ -> id) p
 
@@ -166,7 +171,7 @@ bForAll :: Quantifiable formula => (Term -> Formula)
                                 -> (Term -> formula) -> Formula
 bForAll dom p = neg $ quantify (\ts f -> neg $ foldr (==>) f (map dom ts)) p
 
--- | Assert that a term is a ntural number
+-- | Assert that a term is a natural number
 nat :: Term -> Formula
 nat x = 0 |<=| x
 

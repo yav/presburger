@@ -5,6 +5,7 @@ module Data.Integer.Presburger.Formula
   , fConns
   , fAtom
   , fLet
+  , fLetNums
   , fNeg
   , Conn(..)
   , Pol(..)
@@ -20,7 +21,7 @@ module Data.Integer.Presburger.Formula
   where
 
 import Data.Integer.Presburger.Term
-  (Term, Name, PP(..), pp, tLet, tSplit, isConst)
+  (Term, Name, PP(..), pp, tLet, tLetNums, tSplit, isConst)
 
 import Text.PrettyPrint
 import Control.Monad(liftM2)
@@ -108,6 +109,18 @@ fNeg (AtomF a)       = AtomF (negA a)
   negA (Atom pol op t1 t2)  = Atom (negP pol) op t1 t2
   negA (Div  pol m t)       = Div  (negP pol) m t
 
+
+fLetNums :: [(Name,Integer)] -> Formula -> Formula
+fLetNums su fo =
+  case fo of
+    ConnF c f1 f2 -> fConn c (fLetNums su f1) (fLetNums su f2)
+    AtomF a ->
+      case a of
+        Atom p s t1 t2 ->
+          let (lhs,rhs) = tSplit $ tLetNums su $ t2 - t1
+          in AtomF (mkAtom p s lhs rhs)
+        Div  p m t1    -> AtomF (mkDiv p m (tLetNums su t1))
+        Bool _         -> fo
 
 fLet :: Name -> Term -> Formula -> Formula
 fLet x t fo =

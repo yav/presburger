@@ -13,6 +13,7 @@ module Data.Integer.Presburger.Term
   , (|*|)
   , tLet
   , tLetNum
+  , tLetNums
   , tVars
   ) where
 
@@ -88,6 +89,10 @@ tLet x t1 t2 = let (a,t) = tSplitVar x t2
 tLetNum :: Name -> Integer -> Term -> Term
 tLetNum x k t = let (c,T n m) = tSplitVar x t
                 in T (c * k + n) m
+
+-- | Replace the given variables with constants.
+tLetNums :: [(Name,Integer)] -> Term -> Term
+tLetNums xs t = foldr (\(x,i) t1 -> tLetNum x i t1) t xs
 
 -- | Construct a term with a single variable.
 tVar :: Name -> Term
