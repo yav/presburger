@@ -172,14 +172,16 @@ nat x = 0 |<=| x
 
 --------------------------------------------------------------------------------
 isTrue :: Formula -> Bool
-isTrue (F _ fo) = case A.isBool =<< A.isFAtom fo of
-                    Just x -> x
-                    Nothing
-                     | Just (c, f1, f2) <- A.isFConn fo
-                       -> case c of
-                            A.And -> isTrue (F undefined f1) && isTrue (F undefined f2)
-                            A.Or  -> isTrue (F undefined f1) || isTrue (F undefined f2)
-                    _  -> error "Unexpected free variables in term"
+isTrue (F _ fo0) = go fo0
+  where
+  go fo = case A.isBool =<< A.isFAtom fo of
+            Just x -> x
+            Nothing ->
+              case A.isFConn fo of
+                Just (c, f1, f2) -> case c of
+                                      A.And -> go f1 && go f2
+                                      A.Or  -> go f1 || go f2
+                _  -> error "Unexpected free variables in term"
 
 
 

@@ -79,17 +79,16 @@ fConns c fs   = foldr1 (fConn c) fs
 
 fConn :: Conn -> Formula -> Formula -> Formula
 
-fConn And f1@(AtomF (Bool False)) _                        = f1
-fConn And    (AtomF (Bool True))  f2                       = f2
--- fConn And _                       f2@(AtomF (Bool False))  = f2
--- fConn And f1                         (AtomF (Bool True))   = f1
+-- NOTE: Here we only simply True/False when it appears in the first argument.
+-- This memory leaks where we have to fullly evaluate both sub-formulas
+-- before we know the top-most connective in the formula.
+fConn And f1@(AtomF (Bool False)) _   = f1
+fConn And    (AtomF (Bool True))  f2  = f2
 
-fConn Or  f1@(AtomF (Bool True))  _                        = f1
-fConn Or     (AtomF (Bool False)) f2                       = f2
--- fConn Or  _                       f2@(AtomF (Bool True))   = f2
--- fConn Or  f1                         (AtomF (Bool False))  = f1
+fConn Or  f1@(AtomF (Bool True))  _   = f1
+fConn Or     (AtomF (Bool False)) f2  = f2
 
-fConn c f1 f2 = ConnF c f1 f2
+fConn c f1 f2                         = ConnF c f1 f2
 
 fAtom :: Atom -> Formula
 fAtom = AtomF
