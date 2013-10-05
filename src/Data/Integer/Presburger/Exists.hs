@@ -188,12 +188,12 @@ computeDelta = go True 1
   tryEqOpt d fo@(CtAtomF (AtomCt Pos Eq _ t)) todo done =
     (d, case todo ++ done of
           []   -> fo
-          more -> CtConnF And (Fo $ foldl1 (fConn And)
+          more -> CtConnF And (Fo $ foldr1 (fConn And)
                                     (map (addDef t) more)) fo)
 
   tryEqOpt d (CtConnF And f1 f2) todo done = tryEqOpt d f1 (f2 : todo) done
   tryEqOpt d f (f1 : todo) done = tryEqOpt d f1 todo (f : done)
-  tryEqOpt d f [] done          = go False d (foldl (CtConnF And) f done)
+  tryEqOpt d f [] done          = go False d (foldr (CtConnF And) f done)
 
   addDef t ctfo = ctAtoms (letAtom t) ctfo
 
