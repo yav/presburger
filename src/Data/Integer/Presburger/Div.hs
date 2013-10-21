@@ -50,18 +50,20 @@ solve' [] cs
   ok (m,t) = let Just b = isConst t
              in mod b m == 0
 
-solve' ((x,u) : vars) cs =
-  [ (x,v) : su | su <- solve' vars rest, v <- soln su ]
+solve' ((x,u) : vars) cs
+  | null cs_this = [ (x,v) : su | su <- solve' vars cs,   v <- [ 1 .. u ] ]
+  | otherwise    = [ (x,v) : su | su <- solve' vars rest, v <- soln su ]
   where
-  (cs_this, cs_more) = partition ((/= 0) . tCoeff x . snd) cs
-  ((m,t),rest0) = joinCts x cs_this
+  (cs_this, cs_more)  = partition ((/= 0) . tCoeff x . snd) cs
 
-  rest = cs_more ++ rest0
+  ((m,t),rest0)       = joinCts x cs_this
+  rest                = cs_more ++ rest0
 
-  soln su =
-    let (a,t1) = tSplitVar x (instTerm su t)
-        Just b = isConst t1
-    in solveDiv u m a b
+  soln su             = let (a,t1) = tSplitVar x (instTerm su t)
+                            Just b = isConst t1
+                        in solveDiv u m a b
+
+
 
 instTerm :: Solution -> Term -> Term
 instTerm [] ty = ty
