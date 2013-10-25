@@ -8,6 +8,7 @@ import Data.Integer.Presburger.Term
 import Data.Integer.Presburger.Formula
 import Data.Integer.Presburger.Div(DivCt,solve)
 import Data.Maybe(mapMaybe)
+import Control.Monad(guard)
 
 {-| A type used while eliminating the quantifier for a variable.
 The atoms are normalized so that the variable is on its own and has
@@ -243,11 +244,6 @@ letAtom b (AtomCt pol op _ rhs) = mkAtom pol op newLhs newRhs
 letAtom b (DivCt p m _ t) = mkDiv p m (b + t)
 
 
-
--- XXX:
--- Optimization 2: When we are eliminating top-level quantifiers,
--- we don't need to do all of [ 1 .. delta ]
-
 ex :: Name -> Formula -> Formula
 ex x fo
   | Just (Or, f1, f2) <- isFConn fo = fConn Or (ex x f1) (ex x f2)
@@ -258,7 +254,7 @@ ex x fo
       case getBounds (getCts ctFo []) of
         Left lowerBounds  ->
           fConns Or $
-          [ ctAtoms (fNegInfAtom $ fromInteger j) ctFo
+          [ ctAtoms (fNegInfAtom (fromInteger j)) ctFo
           | j <- [ 1 .. delta ] ]
           ++
           [ ctAtoms (letAtom (j |+| b)) ctFo
@@ -279,20 +275,64 @@ exists :: [Name] -> Formula -> Formula
 exists xs f = foldr ex f xs
 
 
+example = fAtom $ mkAtom Pos Eq (3 |*| tVar 1) (5 |*| tVar 2)
+
+-- 3 * x = 5 * y
+-- x = 5 * y  /\ 3 | x
+-- x = 5 * y /\ 3 | 5 * y
+-- { x = 5 * y } 3 | 5 * y
+
+
 {- | We use this for outermost quantifiers, which assumes no free variables
 in the formula. -}
-existsTop :: [Name] -> Formula -> Formula
-existsTop [] fo = fo
+existsTop :: [Name] -> Formula -> [ Soln ]
+existsTop [] fo = if isTrue fo then [ [] ] else []
 existsTop xs fo
-  | Just (Or, f1, f2) <- isFConn fo = fConn Or (existsTop xs f1)
-                                               (existsTop xs f2)
-existsTop xs fo = fConns Or $ map expandTopFo $ foldr exTops [TopFo [] fo] xs
+  | Just (Or, f1, f2) <- isFConn fo = existsTop xs f1 ++ existsTop xs f2
+existsTop xs fo = concat $ map expandTopFo $ foldr exTops [TopFo [] fo] xs
 
-data TopFo = TopFo [(Name,Integer)] Formula
+data Val a = InfDown | Num a | InfUp deriving Show
+type Soln = [ (Name,Val Integer) ]
+data TopFo = TopFo [(Name,Integer,Val Term,Integer)] Formula
+              deriving Show
 
-expandTopFo :: TopFo -> Formula
-expandTopFo (TopFo ds fo) = fConns Or $ map (`fLetNums` fo)
-                                      $ solve ds $ findDivCts fo
+expandTopFo :: TopFo -> [ Soln ]
+expandTopFo (TopFo ds0 fo) = mapMaybe useSu $ solve ds $ findDivCts fo
+  where
+  ds       = [ (x,d) | (x,d,_,_) <- ds0 ]
+  useSu su = do guard (isTrue (fLetNums su fo))
+                return [ (x, mkT su s t) | (x,_,t,s) <- ds0 ]
+
+
+  mkT _ _ InfDown = InfDown
+  mkT _ _ InfUp   = InfUp
+  mkT su s (Num t) =
+    let t1 = tLetNums su t
+    in case isConst t1 of
+         Just v  -> Num (div v s)
+         Nothing -> error ("expantTopFo: Free variables in" ++ show t1)
+
+-- F_neg (j) = F(j - L * delta)
+
+-- x == t     = False
+-- x /= t     = True
+
+
+
+isTrue :: Formula -> Bool
+isTrue fo =
+  case isBool =<< isFAtom fo of
+    Just x -> x
+    Nothing ->
+      case isFConn fo of
+        Just (c, f1, f2) -> case c of
+                              And -> isTrue f1 && isTrue f2
+                              Or  -> isTrue f1 || isTrue f2
+        _  -> error "Unexpected free variables in term"
+
+
+
+
 
 findDivCts :: Formula -> [DivCt]
 findDivCts = mapMaybe isDivCt . splitConn And
@@ -311,17 +351,20 @@ exTop x it@(TopFo ds fo) =
     _    -> map topFo $
       case getBounds (getCts ctFo []) of
         Left lowerBounds  ->
-                ctAtoms (fNegInfAtom $ tVar x) ctFo
-            : [ ctAtoms (letAtom (tVar x + b)) ctFo | b <- lowerBounds ]
+                (InfDown, ctAtoms (fNegInfAtom $ tVar x') ctFo)
+            : [ (Num te, ctAtoms (letAtom te) ctFo) | b <- lowerBounds
+                                                , let te = tVar x' + b ]
 
         Right upperBounds ->
-                ctAtoms (posInfAtom $ negate (tVar x)) ctFo
-           : [ ctAtoms (letAtom (negate (tVar x) + a)) ctFo | a <- upperBounds ]
+                (InfUp, ctAtoms (posInfAtom $ negate (tVar x')) ctFo)
+           : [ (Num te, ctAtoms (letAtom te) ctFo) | a <- upperBounds
+                                               , let te = a - tVar x' ]
   where
-  (_coeff, ctFo0) = aCts x fo
+  (coeff, ctFo0)  = aCts x fo
   (delta, ctFo)   = computeDelta ctFo0
-  topFo f         = TopFo ((x,delta) : ds) f
+  topFo (te,f)    = TopFo ((x',delta,te,coeff) : ds) f
 
+  x'              = negate x
 
 
 instance Show Ct where
