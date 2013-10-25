@@ -3,11 +3,12 @@ module Data.Integer.Presburger.Term
   ( PP(..)
   , pp
   , Name
-  , Term
+  , Term(..)
   , tVar
   , tSplit
   , tSplitVar
   , tCoeff
+  , tHasVar
   , isConst
   , (|+|)
   , (|*|)
@@ -78,7 +79,8 @@ instance PP Term where
                  | otherwise  = text "-" <+> ppMul (abs n) x
 
     ppMul n x = integer n <+> text "*" <+> ppVar x
-    ppVar n   = text ("a" ++ show n)
+    ppVar n | n >= 0    = text ("a" ++ show n)
+            | otherwise = text ("b" ++ show (abs n))
 
 -- | Replace a variable with a term.
 tLet :: Name -> Term -> Term -> Term
@@ -96,6 +98,7 @@ tLetNums xs t = foldr (\(x,i) t1 -> tLetNum x i t1) t xs
 
 -- | Construct a term with a single variable.
 tVar :: Name -> Term
+tVar 0 = error "0 is not a valid varibale name"
 tVar x = T 0 (Map.singleton x 1)
 
 infixr 7 |*|
@@ -122,6 +125,9 @@ tSplitVar x t@(T n m) =
     (Nothing,_) -> (0,t)
     (Just k,m1) -> (k, T n m1)
 
+tHasVar :: Name -> Term -> Bool
+tHasVar x (T _ m) = Map.member x m
+
 -- | Split into (negative, positive) coeficients.
 -- All coeficients in the resulting terms are positive.
 tSplit :: Term -> (Term,Term)
@@ -139,6 +145,8 @@ isConst (T n m)
 -- | The variables mentioned in this term.
 tVars :: Term -> IntSet
 tVars (T _ m) = Map.keysSet m
+
+
 
 --------------------------------------------------------------------------------
 class PP t where
