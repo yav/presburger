@@ -10,32 +10,6 @@ import Control.Monad
 
 import Debug.Trace
 
-newtype S a = S (RW -> (a,RW))
-
-instance Functor S where
-  fmap = liftM
-
-instance Applicative S where
-  pure  = return
-  (<*>) = ap
-
-instance Monad S where
-  return a      = S (\s -> (a,s))
-  S m >>= k     = S (\s -> let (a,s1) = m s
-                               S m1   = k a
-                           in m1 s1)
-
-updS_ :: (RW -> RW) -> S ()
-updS_ f = S (\s -> ((), f s))
-
-updS :: (RW -> (a,RW)) -> S a
-updS f = S f
-
-newVar :: S Name
-newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
-
-testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = [] }
-
 
 
 data Ct = Term :=: Term | Term :<: Term | Ct :\/: Ct
@@ -48,8 +22,8 @@ data RW = RW { nameSource :: !Int
              } deriving Show
 
 data Inerts = Inerts
-  { upperBounds :: IntMap (Integer,Term)    -- a |-> (c,t)  <=>  c*a < t
-  , lowerBounds :: IntMap (Integer,Term)    -- a |-> (c,t)  <=>  t < c*a
+  { upperBounds :: IntMap [(Integer,Term)]  -- a |-> (c,t)  <=>  c*a < t
+  , lowerBounds :: IntMap [(Integer,Term)]  -- a |-> (c,t)  <=>  t < c*a
   , solved      :: IntMap Term  -- idempotent subst
   } deriving Show
 
@@ -76,6 +50,8 @@ addSolved x t = updS_ $ \rw ->
                  todo rw
         }
   where
+  kickOut y (_,s) = x == y || tHasVar x s
+
   kickOut y (_,s) = x == y || tHasVar x s
 
   toC f (y,(c,s)) = if x == y then f (c |*| t)      (tLet x t s)
@@ -130,5 +106,104 @@ common (x : y : zs) =
     1 -> Nothing
     n -> common (n : zs)
 
+
+-- Assumes variables in the term part are sorted
+-- Assumes that substitution has been applied
+-- c + xs < 0
+addLt c []
+  | c < 0     = return ()
+  | otherwise = fail "impossible"
+
+addLt c0 xs0 =
+  let (c,(y,yc) : ys) =
+          case common (c0 : map snd xs0) of
+            Just d  -> (div c0 d, [ (x, div xc d) | (x,xc) <- xs0 ])
+            Nothing -> (c0, xs0)
+  in undefined
+
+-- a * x < alpha  /\ beta < b * x
+shadows :: Name -> Integer -> Term -> Term -> Integer -> (Ct,Ct,[Ct])
+shadows x a alpha beta b =
+  let diff    = b |*| alpha - a |*| beta
+      real    = fromInteger 0       :<: diff
+      dark    = fromInteger (a * b) :<: diff
+      gray = [ (b |*| tVar x) :=: (i |+| beta) | i <- [ 1 .. b - 1 ] ]
+  in (real,dark,gray)
+
+-- 2 * x < 1  
+
+-- 2 * x < y
+--
+-- 1 < x
+--
+-- shadows a=2 alpha=y beta=1 b=1
+--   diff = y - 2
+--   real = 0 < y - 2 = 2 < y
+--   dark = 2 < y - 2 = 4 < y
+--   gray = [ ]
+
+
+--------------------------------------------------------------------------------
+
+data Answer a = None | One a | Choice (Answer a) (Answer a)
+                deriving Show
+
+instance Monad Answer where
+  return a           = One a
+  fail _             = None
+  None >>= _         = None
+  One a >>= k        = k a
+  Choice m1 m2 >>= k = mplus (m1 >>= k) (m2 >>= k)
+
+instance MonadPlus Answer where
+  mzero                = None
+  mplus None x         = x
+  mplus (Choice x y) z = mplus x (mplus y z)
+  mplus x y            = Choice x y
+
+instance Functor Answer where
+  fmap = liftM
+
+instance Applicative Answer where
+  pure  = return
+  (<*>) = ap
+
+
+newtype S a = S { withS :: RW -> Answer (a,RW) }
+
+instance Monad S where
+  return a      = S $ \s -> return (a,s)
+  S m >>= k     = S $ \s -> do (a,s1) <- m s
+                               let S m1 = k a
+                               m1 s1
+
+instance MonadPlus S where
+  mzero               = S $ \_ -> mzero
+  mplus (S m1) (S m2) = S $ \s -> mplus (m1 s) (m2 s)
+
+instance Functor S where
+  fmap = liftM
+
+instance Applicative S where
+  pure  = return
+  (<*>) = ap
+
+
+updS_ :: (RW -> RW) -> S ()
+updS_ f = S $ \s -> return ((), f s)
+
+updS :: (RW -> (a,RW)) -> S a
+updS f = S $ \s -> return (f s)
+
+newVar :: S Name
+newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
+
+getUBs :: Name -> S [(Integer, Term)]
+getUBs x = S $ \rw -> return (Map.findWithDefault [] x (upperBounds rw), rw)
+
+getLBs :: Name -> S [(Integer, Term)]
+getLBs x = S $ \rw -> return (Map.findWithDefault [] x (lowerBounds rw), rw)
+
+testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = [] }
 
 
