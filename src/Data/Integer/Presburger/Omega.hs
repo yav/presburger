@@ -65,6 +65,8 @@ qNegTerms = (negTerms, \a q -> q { negTerms = a })
 qDarkGrayTerms :: Field (Term, [Term])
 qDarkGrayTerms = (darkGrayTerms, \a q -> q { darkGrayTerms = a })
 
+--------------------------------------------------------------------------------
+-- Constraints
 
 ctLt :: Term -> Term -> Term
 ctLt t1 t2 = t1 - t2
@@ -73,7 +75,7 @@ ctGt :: Term -> Term -> Term
 ctGt t1 t2 = ctLt t2 t1
 
 --------------------------------------------------------------------------------
-
+-- Inert set: the solver state for one possibility
 
 data Inerts = Inerts
   { upperBounds :: IntMap [(Integer,Term)]  -- ^ a |-> (c,t)  <=>  c*a < t
@@ -115,8 +117,11 @@ iSolved x t i =
        , Map.filter (not . null) (fmap snd mp2)
        )
 
+
+--------------------------------------------------------------------------------
+-- Solving constraints
+
 -- Assumes substitution has already been applied
--- c + xs = 0
 solveIs0 :: Term -> S ()
 solveIs0 t
 
@@ -133,7 +138,7 @@ solveIs0 t
   | Just (xc,x,s) <- tGetSimpleCoeff t =
     addSolved x (if xc > 0 then negate s else s)
 
-  -- K * S = 0
+  -- A * S = 0
   | Just (_, s) <- tFactor t  = addWork qZeroTerms s
 
   -- See Section 3.1 of paper for details.
@@ -162,7 +167,7 @@ solveIsNeg t
   -- A < 0
   | Just a <- isConst t = guard (a < 0)
 
-  -- K * S < 0
+  -- A * S < 0
   |Just (_,s) <- tFactor t = addWork qNegTerms s
 
   -- See Section 5.1 of the paper
@@ -182,6 +187,7 @@ solveIsNeg t
                            alpha = negate s
                        return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
 
+      -- See Note [Shadows]
        mapM_ (\(a,alpha,b,beta) ->
           do let real = ctLt (a |*| beta) (b |*| alpha)
                  dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
@@ -226,6 +232,7 @@ which is covered by the dark shadow.
 
 
 --------------------------------------------------------------------------------
+-- Monads
 
 data Answer a = None | One a | Choice (Answer a) (Answer a)
                 deriving Show
@@ -253,7 +260,7 @@ instance Applicative Answer where
   (<*>) = ap
 
 
-newtype S a = S { withS :: RW -> Answer (a,RW) }
+newtype S a = S (RW -> Answer (a,RW))
 
 instance Monad S where
   return a      = S $ \s -> return (a,s)
