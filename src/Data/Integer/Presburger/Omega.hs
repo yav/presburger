@@ -190,7 +190,29 @@ addShadows shs =
      sequence_ dark_grays
 
 
--- a * x < alpha /\ beta < b * x
+{- P: beta < b * x
+   Q: a * x < alpha
+
+real: a * beta < a * b * x < b * alpha
+
+dark: b * alpha - a * beta > a * b
+
+
+gray: b * x = beta + 1 \/
+      b * x = beta + 2 \/
+      ...
+      b * x = beta + (b-1)
+
+We stop at @b - 1@ because if:
+
+> b * x                >= beta + b
+> a * b * x            >= a * (beta + b)     -- (a *)
+> a * b * x            >= a * beta + a * b   -- distrib.
+> b * alpha            >  a * beta + a * b   -- comm. and Q
+> b * alpha - a * beta > a * b               -- subtract (a * beta)
+
+which is covered by the dark shadow.
+-}
 shadows :: Name -> Integer -> Term -> Term -> Integer -> (S (), S())
 shadows x a alpha beta b =
   let real = ctLt (a |*| beta) (b |*| alpha)
