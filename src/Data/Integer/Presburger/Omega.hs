@@ -10,6 +10,23 @@ import Control.Applicative
 import Control.Monad
 
 
+--------------------------------------------------------------------------------
+-- Solver interface
+
+assertEq :: Term -> Term -> S ()
+assertEq t1 t2 =
+  do i <- get inerts
+     addWork qZeroTerms $ iApSubst i (t1 - t2)
+
+assertLt :: Term -> Term -> S ()
+assertLt t1 t2 =
+  do i <- get inerts
+     addWork qNegTerms $ iApSubst i (t1 - t2)
+
+
+
+--------------------------------------------------------------------------------
+
 data RW = RW { nameSource :: !Int
              , todo       :: WorkQ
              , inerts     :: Inerts
@@ -24,14 +41,7 @@ solveAll =
          do mbLt <- getWork qNegTerms
             case mbLt of
               Just p  -> solveIsNeg p >> solveAll
-              Nothing ->
-                do mbDarkGray <- getWork qDarkGrayTerms
-                   case mbDarkGray of
-                     Just (p,ps) ->
-                        msum (solveIsNeg p : map solveIs0 ps) >> solveAll
-                     Nothing -> return ()
-
-
+              Nothing -> return ()
 
 
 --------------------------------------------------------------------------------
@@ -39,19 +49,14 @@ solveAll =
 
 data WorkQ = WorkQ { zeroTerms     :: [Term]    -- ^ t == 0
                    , negTerms      :: [Term]    -- ^ t <  0
-                   , darkGrayTerms :: [(Term,[Term])]
-                     -- ^ t < 0 || any (== 0) ts
                    } deriving Show
 
 qEmpty :: WorkQ
-qEmpty = WorkQ { zeroTerms = [], negTerms = [], darkGrayTerms = [] }
+qEmpty = WorkQ { zeroTerms = [], negTerms = [] }
 
 qLet :: Name -> Term -> WorkQ -> WorkQ
 qLet x t q = WorkQ { zeroTerms      = map (tLet x t) (zeroTerms q)
                    , negTerms       = map (tLet x t) (negTerms  q)
-                   , darkGrayTerms  =
-                      [ ( tLet x t t1
-                        , map (tLet x t) ts) | (t1,ts) <- darkGrayTerms q ]
                    }
 
 type Field t = (WorkQ -> [t], [t] -> WorkQ -> WorkQ)
@@ -61,9 +66,6 @@ qZeroTerms = (zeroTerms, \a q -> q { zeroTerms = a })
 
 qNegTerms :: Field Term
 qNegTerms = (negTerms, \a q -> q { negTerms = a })
-
-qDarkGrayTerms :: Field (Term, [Term])
-qDarkGrayTerms = (darkGrayTerms, \a q -> q { darkGrayTerms = a })
 
 --------------------------------------------------------------------------------
 -- Constraints
@@ -75,24 +77,45 @@ ctGt :: Term -> Term -> Term
 ctGt t1 t2 = ctLt t2 t1
 
 --------------------------------------------------------------------------------
--- Inert set: the solver state for one possibility
+-- Inert set
 
+-- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
-  { upperBounds :: IntMap [(Integer,Term)]  -- ^ a |-> (c,t)  <=>  c*a < t
-  , lowerBounds :: IntMap [(Integer,Term)]  -- ^ a |-> (c,t)  <=>  t < c*a
-  , solved      :: IntMap Term              -- ^ a |-> t, idempotent subst
+  { upperBounds :: IntMap [(Integer,Term)]
+    -- ^ Known upper bounds for variables.
+    -- An entry: @x |-> (c,t)@ asserts that @c * x < t@
+
+  , lowerBounds :: IntMap [(Integer,Term)]
+    -- ^ Known lower bounds for variables.
+    -- An entry: @x |-> (c,t)@ asserts that @t < c * x@
+
+  , solved :: IntMap Term
+    -- ^ Definitions for resolved variabless.
+    -- These form an idempotent substitution.
   } deriving Show
 
-noInerts :: Inerts
-noInerts = Inerts { upperBounds = Map.empty
-                  , lowerBounds = Map.empty
-                  , solved      = Map.empty
-                  }
 
--- | Add a simple equality.
--- Assumes substitution has already been applied.
--- Returns: (restarted lessThan0 constraints, and new inerts)
--- The lessThan0 constraints are NOT rewritten.
+-- | An empty inert set.
+iNone :: Inerts
+iNone = Inerts { upperBounds = Map.empty
+               , lowerBounds = Map.empty
+               , solved      = Map.empty
+               }
+
+-- | Rewrite a term using the definitions from an inert set.
+iApSubst :: Inerts -> Term -> Term
+iApSubst i t = foldr apS t $ Map.toList $ solved i
+  where apS (x,t1) t2 = tLet x t1 t2
+
+-- | Add a definition.  Upper and lower bound constraints that mention
+-- the variable are "kicked-out" so that they can be reinserted in the
+-- context of the new knowledge.
+--
+--    * Assumes substitution has already been applied.
+--
+--    * The kciked-out constraints are NOT rewritten, this happens
+--      when they get inserted in the work queue.
+
 iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
 iSolved x t i =
   ( kickedOutL ++ kickedOutU
@@ -121,7 +144,8 @@ iSolved x t i =
 --------------------------------------------------------------------------------
 -- Solving constraints
 
--- Assumes substitution has already been applied
+-- | Solve a constraint if the form @t = 0@.
+-- Assumes substitution has already been applied.
 solveIs0 :: Term -> S ()
 solveIs0 t
 
@@ -131,12 +155,12 @@ solveIs0 t
   -- A + B * x = 0
   | Just (a,b,x) <- tIsOneVar t =
     case divMod (-a) b of
-      (q,0) -> addSolved x (fromInteger q)
+      (q,0) -> addDef x (fromInteger q)
       _     -> mzero
 
   -- x + S = 0
   | Just (xc,x,s) <- tGetSimpleCoeff t =
-    addSolved x (if xc > 0 then negate s else s)
+    addDef x (if xc > 0 then negate s else s)
 
   -- A * S = 0
   | Just (_, s) <- tFactor t  = addWork qZeroTerms s
@@ -149,7 +173,7 @@ solveIs0 t
          let sgn  = signum ak
              soln = (negate sgn * m) |*| tVar v
                   + tMapCoeff (\c -> sgn * modulus c m) s
-         addSolved xk soln
+         addDef xk soln
 
          let upd i = div (2*i + m) (2*m) + modulus i m
          addWork qZeroTerms (negate (abs ak) |*| tVar v + tMapCoeff upd s)
@@ -160,6 +184,7 @@ modulus :: Integer -> Integer -> Integer
 modulus a m = a - m * div (2 * a + m) (2 * m)
 
 
+-- | Solve a constraint of the form @t < 0@.
 -- Assumes that substitution has been applied
 solveIsNeg :: Term -> S ()
 solveIsNeg t
@@ -193,7 +218,7 @@ solveIsNeg t
                  dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
                  gray = [ b |*| tVar x - i |+| beta | i <- [ 1 .. b - 1 ] ]
              addWork qNegTerms real
-             addWork qDarkGrayTerms (dark, gray)
+             msum (addWork qNegTerms dark : map (addWork qZeroTerms) gray)
              ) ctrs
 
   | otherwise = error "solveIsNeg: unreachable"
@@ -291,6 +316,7 @@ get f = updS $ \rw -> (f rw, rw)
 newVar :: S Name
 newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
 
+-- | Try to get a new item from the work queue.
 getWork :: Field t -> S (Maybe t)
 getWork (getF,setF) = updS $ \rw ->
   let work = todo rw
@@ -298,18 +324,20 @@ getWork (getF,setF) = updS $ \rw ->
        []     -> (Nothing, rw)
        t : ts -> (Just t,  rw { todo = setF ts work })
 
+-- | Add a new item to the work queue.
 addWork :: Field t -> t -> S ()
 addWork (getF,setF) t = updS_ $ \rw ->
   let work = todo rw
   in rw { todo = setF (t : getF work) work }
 
+-- | Get upper or lower bounds for a variable.
 getBounds :: (Inerts -> IntMap [a]) -> Name -> S [a]
 getBounds f x = get $ Map.findWithDefault [] x . f . inerts
 
-
+-- | Add a new definition.
 -- Assumes substitution has already been applied
-addSolved :: Name -> Term -> S ()
-addSolved x t = updS_ $ \rw ->
+addDef :: Name -> Term -> S ()
+addDef x t = updS_ $ \rw ->
   let (newWork,newInerts) = iSolved x t (inerts rw)
   in rw { inerts = newInerts
         , todo   = qLet x t $
