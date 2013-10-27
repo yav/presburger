@@ -19,11 +19,11 @@ solveAll :: S ()
 solveAll =
   do mbEq <- getIs0
      case mbEq of
-       Just eq -> solveIs0 eq >> solveAll
+       Just p  -> solveIs0 p >> solveAll
        Nothing ->
          do mbLt <- getIsNeg
             case mbLt of
-              Just lt -> solveIsNeg lt >> solveAll
+              Just p  -> solveIsNeg p >> solveAll
               Nothing -> return ()
 
 
