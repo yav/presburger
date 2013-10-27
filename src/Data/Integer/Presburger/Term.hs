@@ -3,15 +3,22 @@ module Data.Integer.Presburger.Term
   ( PP(..)
   , pp
   , Name
-  , Term(..)
+  , Term
   , tVar
   , tSplit
   , tSplitVar
   , tCoeff
   , tHasVar
   , isConst
+  , tIsOneVar
+  , tGetSimpleCoeff
+  , tAllCoeffs
+  , tFactor
+  , tLeastAbsCoeff
+  , tLeastVar
   , (|+|)
   , (|*|)
+  , tMapCoeff
   , tLet
   , tLetNum
   , tLetNums
@@ -142,9 +149,65 @@ isConst (T n m)
   | Map.null m  = Just n
   | otherwise   = Nothing
 
+-- | Returns: @Just (a, b, x)@ if the term is the form: @a + b * x@
+tIsOneVar :: Term -> Maybe (Integer, Integer, Name)
+tIsOneVar (T a m) = case Map.toList m of
+                      [ (x,b) ] -> Just (a, b, x)
+                      _         -> Nothing
+
+-- | Returns all coefficient in the term, including the constant as long
+-- as it is not 0
+tAllCoeffs :: Term -> [Integer]
+tAllCoeffs (T a m) = if a == 0 then Map.elems m else a : Map.elems m
+
+-- | Spots terms that contain variables with unit coefficients
+-- (i.e., of the form @x + t@ or @t - x@).
+-- Returns (coeff, var, rest of term)
+tGetSimpleCoeff :: Term -> Maybe (Integer, Name, Term)
+tGetSimpleCoeff (T a m) =
+  do let (m1,m2) = Map.partition (\x -> x == 1 || x == -1) m
+     ((x,xc), m3) <- Map.minViewWithKey m1
+     return (xc, x, T a (Map.union m3 m2))
+
 -- | The variables mentioned in this term.
 tVars :: Term -> IntSet
 tVars (T _ m) = Map.keysSet m
+
+
+-- | Try to factor-out a common consant (> 1) from a term.
+-- For example, @2 + 4x@ becomes @2 * (1 + 2x)@.
+tFactor :: Term -> Maybe (Integer, Term)
+tFactor (T c m) =
+  do d <- common (c : Map.elems m)
+     return (d, T (div c d) (fmap (`div` d) m))
+  where
+  common :: [Integer] -> Maybe Integer
+  common []  = Nothing
+  common [x] = Just x
+  common (x : y : zs) =
+    case gcd x y of
+      1 -> Nothing
+      n -> common (n : zs)
+
+-- | Extract a variable with a coefficient whose absolute value is minimal.
+tLeastAbsCoeff :: Term -> Maybe (Integer, Name, Term)
+tLeastAbsCoeff (T c m) = do (xc,x,m1) <- Map.foldWithKey step Nothing m
+                            return (xc, x, T c m1)
+  where
+  step x xc Nothing   = Just (xc, x, Map.delete x m)
+  step x xc (Just (yc,_,_))
+    | abs xc < abs yc = Just (xc, x, Map.delete x m)
+  step _ _ it         = it
+
+-- | Extract the least variable from a term
+tLeastVar :: Term -> Maybe (Integer, Name, Term)
+tLeastVar (T c m) =
+  do ((x,xc), m1) <- Map.minViewWithKey m
+     return (xc, x, T c m1)
+
+-- | Apply a function to all coefficients, including the constnat
+tMapCoeff :: (Integer -> Integer) -> Term -> Term
+tMapCoeff f (T c m) = T (f c) (fmap f m)
 
 
 

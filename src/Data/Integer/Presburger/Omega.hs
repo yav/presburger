@@ -1,30 +1,62 @@
+{-# LANGUAGE PatternGuards #-}
 module Data.Integer.Presburger.Omega where
 
 import Data.Integer.Presburger.Term
 import           Data.IntMap (IntMap)
 import qualified Data.IntMap as Map
-import Data.Ord(comparing)
-import Data.List(sortBy,partition)
+import Data.List(partition)
+import Data.Maybe(maybeToList)
 import Control.Applicative
 import Control.Monad
 
-import Debug.Trace
-
-
-
-data Ct = Term :=: Term | Term :<: Term | Ct :\/: Ct
-          deriving Show
-
 
 data RW = RW { nameSource :: !Int
+             , todo       :: WorkQ
              , inerts     :: Inerts
-             , todo       :: [Ct]
              } deriving Show
 
+solveAll :: S ()
+solveAll =
+  do mbEq <- getIs0
+     case mbEq of
+       Just eq -> solveIs0 eq >> solveAll
+       Nothing ->
+         do mbLt <- getIsNeg
+            case mbLt of
+              Just lt -> solveIsNeg lt >> solveAll
+              Nothing -> return ()
+
+
+
+
+--------------------------------------------------------------------------------
+-- The work queue
+
+data WorkQ = WorkQ { zeroTerms :: [Term]    -- ^ t == 0
+                   , negTerms  :: [Term]    -- ^ t <  0
+                   } deriving Show
+
+qEmpty :: WorkQ
+qEmpty = WorkQ { zeroTerms = [], negTerms = [] }
+
+qLet :: Name -> Term -> WorkQ -> WorkQ
+qLet x t q = WorkQ { zeroTerms = map (tLet x t) (zeroTerms q)
+                   , negTerms  = map (tLet x t) (negTerms  q)
+                   }
+
+ctLt :: Term -> Term -> Term
+ctLt t1 t2 = t1 - t2
+
+ctGt :: Term -> Term -> Term
+ctGt t1 t2 = ctLt t2 t1
+
+--------------------------------------------------------------------------------
+
+
 data Inerts = Inerts
-  { upperBounds :: IntMap [(Integer,Term)]  -- a |-> (c,t)  <=>  c*a < t
-  , lowerBounds :: IntMap [(Integer,Term)]  -- a |-> (c,t)  <=>  t < c*a
-  , solved      :: IntMap Term  -- idempotent subst
+  { upperBounds :: IntMap [(Integer,Term)]  -- ^ a |-> (c,t)  <=>  c*a < t
+  , lowerBounds :: IntMap [(Integer,Term)]  -- ^ a |-> (c,t)  <=>  t < c*a
+  , solved      :: IntMap Term              -- ^ a |-> t, idempotent subst
   } deriving Show
 
 noInerts :: Inerts
@@ -33,114 +65,138 @@ noInerts = Inerts { upperBounds = Map.empty
                   , solved      = Map.empty
                   }
 
+-- | Add a simple equality.
+-- Assumes substitution has already been applied.
+-- Returns: (restarted lessThan0 constraints, and new inerts)
+-- The lessThan0 constraints are NOT rewritten.
+iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
+iSolved x t i =
+  ( kickedOutL ++ kickedOutU
+  , Inerts { upperBounds = otherU
+           , lowerBounds = otherL
+           , solved      = Map.insert x t $ Map.map (tLet x t) $ solved i
+           }
+  )
+  where
+  (kickedOutU, otherU) = upd ctLt (upperBounds i)
+  (kickedOutL, otherL) = upd ctGt (lowerBounds i)
+
+  upd f mp =
+        -- xc * x < t
+    let (mb, mp1) = Map.updateLookupWithKey (\_ _ -> Nothing) x mp
+
+        -- xy * y < t(x)
+        mp2       = fmap (partition (tHasVar x . snd)) mp1
+    in ( [ f (xc |*| t) t1 | (xc,t1) <- concat (maybeToList mb) ]
+      ++ [ f (yc |*| tVar y) (tLet x t t1) | (y,(vs,_)) <- Map.toList mp2,
+                                             (yc,t1)    <- vs ]
+       , Map.filter (not . null) (fmap snd mp2)
+       )
+
+
 -- Assumes substitution has already been applied
 addSolved :: Name -> Term -> S ()
 addSolved x t = updS_ $ \rw ->
-  let i = inerts rw
-      (kickedOutU, otherU) = Map.partitionWithKey kickOut (upperBounds i)
-      (kickedOutL, otherL) = Map.partitionWithKey kickOut (lowerBounds i)
-
-  in rw { inerts =
-            Inerts { upperBounds = otherU
-                   , lowerBounds = otherL
-                   , solved = Map.insert x t $ Map.map (tLet x t) $ solved i
-                   }
-        , todo = cvt       (:<:)  kickedOutU ++
-                 cvt (flip (:<:)) kickedOutL ++
-                 todo rw
+  let (newWork,newInerts) = iSolved x t (inerts rw)
+  in rw { inerts = newInerts
+        , todo   = qLet x t $
+                     let work = todo rw
+                     in work { negTerms = newWork ++ negTerms work }
         }
-  where
-  kickOut y (_,s) = x == y || tHasVar x s
 
-  kickOut y (_,s) = x == y || tHasVar x s
+-- Add equality work
+is0 :: Term -> S ()
+is0 t = updS_ $ \rw -> rw { todo = let work = todo rw
+                                   in work { zeroTerms = t : zeroTerms work } }
 
-  toC f (y,(c,s)) = if x == y then f (c |*| t)      (tLet x t s)
-                              else f (c |*| tVar y) (tLet x t s)
-  cvt f           = map (toC f) . Map.toList
-
+-- Add non-equality work
+isNeg :: Term -> S ()
+isNeg t = updS_ $ \rw -> rw { todo = let work = todo rw
+                                     in work { negTerms = t : negTerms work } }
 
 -- Assumes substitution has already been applied
 -- c + xs = 0
-addEq :: Integer -> [(Name,Integer)] -> S ()
+solveIs0 :: Term -> S ()
+solveIs0 t
 
-addEq 0 []        = return ()
+  -- A == 0
+  | Just a <- isConst t = guard (a == 0)
 
-addEq _ []        = fail "impossible" -- XXX: do properly
+  -- A + B * x = 0
+  | Just (a,b,x) <- tIsOneVar t =
+    case divMod (-a) b of
+      (q,0) -> addSolved x (fromInteger q)
+      _     -> mzero
 
-addEq c [(x,xc)]  = case divMod (-c) xc of
-                      (q,0) -> addSolved x (fromInteger q)
-                      _     -> fail "impossible"
+  -- x + S = 0
+  | Just (xc,x,s) <- tGetSimpleCoeff t =
+    addSolved x (if xc > 0 then negate s else s)
 
-addEq c xs
-  | ((x,xc) : ys, zs) <- partition ((1 ==) . abs . snd) xs =
-    addSolved x $ let te = T c $ Map.fromList $ ys ++ zs
-                  in if xc > 0 then negate te else te
+  -- K * S = 0
+  | Just (_, s) <- tFactor t  = is0 s
 
-addEq c xs =
-  case common (c : map snd xs) of
-    Just d  -> addEq (div c d) [ (x, div xc d) | (x,xc) <- xs ]
-
-    -- See page 6 of paper
-    Nothing ->
-      do let (x,cx) : rest = sortBy (comparing snd) xs
-             m             = abs cx + 1
+  -- See Section 3.1 of paper for details.
+  -- We obtain an equivalent formulation but with smaller coefficients.
+  | Just (ak,xk,s) <- tLeastAbsCoeff t =
+      do let m = abs ak + 1
          v <- newVar
-         let sgn  = signum cx
-             soln = sum $ (negate sgn * m) |*| tVar v
-                        : fromInteger (sgn * modulus c m)
-                        : [ (sgn * modulus cy m) |*| tVar y | (y,cy) <- rest ]
-         addSolved x soln
+         let sgn  = signum ak
+             soln = (negate sgn * m) |*| tVar v
+                  + tMapCoeff (\c -> sgn * modulus c m) s
+         addSolved xk soln
 
          let upd i = div (2*i + m) (2*m) + modulus i m
-         addEq (upd c) $ (v, negate (abs cx)) : [ (y, upd cy) | (y,cy) <- rest ]
+         is0 (negate (abs ak) |*| tVar v + tMapCoeff upd s)
+
+  | otherwise = error "solveIs0: unreachable"
 
 modulus :: Integer -> Integer -> Integer
 modulus a m = a - m * div (2 * a + m) (2 * m)
 
--- Find a common factor for all the given inputs.
-common :: [Integer] -> Maybe Integer
-common []  = Nothing
-common [x] = Just x
-common (x : y : zs) =
-  case gcd x y of
-    1 -> Nothing
-    n -> common (n : zs)
 
-
--- Assumes variables in the term part are sorted
 -- Assumes that substitution has been applied
--- c + xs < 0
-addLt c []
-  | c < 0     = return ()
-  | otherwise = fail "impossible"
+solveIsNeg :: Term -> S ()
+solveIsNeg t
 
-addLt c0 xs0 =
-  let (c,(y,yc) : ys) =
-          case common (c0 : map snd xs0) of
-            Just d  -> (div c0 d, [ (x, div xc d) | (x,xc) <- xs0 ])
-            Nothing -> (c0, xs0)
-  in undefined
+  -- A < 0
+  | Just a <- isConst t = guard (a < 0)
 
--- a * x < alpha  /\ beta < b * x
-shadows :: Name -> Integer -> Term -> Term -> Integer -> (Ct,Ct,[Ct])
+  -- K * S < 0
+  | Just (_,s) <- tFactor t = isNeg s
+
+  -- See Section 5.1 of the paper
+  | Just (xc,x,s) <- tLeastVar t =
+
+    if xc < 0
+        -- -XC*x + S < 0
+        -- S < XC*x
+        then do ubs <- getUBs x
+                let b    = negate xc
+                    beta = s
+                addShadows [ shadows x a alpha beta b | (a,alpha) <- ubs ]
+        -- XC*x + S < 0
+        -- XC*x < -S
+        else do lbs <- getLBs x
+                let a     = xc
+                    alpha = negate s
+                addShadows [ shadows x a alpha beta b | (b,beta) <- lbs ]
+
+  | otherwise = error "solveIsNeg: unreachable"
+
+addShadows :: [(S (), S ())] -> S ()
+addShadows shs =
+  do let (reals,dark_grays) = unzip shs
+     sequence_ reals
+     sequence_ dark_grays
+
+
+-- a * x < alpha /\ beta < b * x
+shadows :: Name -> Integer -> Term -> Term -> Integer -> (S (), S())
 shadows x a alpha beta b =
-  let diff    = b |*| alpha - a |*| beta
-      real    = fromInteger 0       :<: diff
-      dark    = fromInteger (a * b) :<: diff
-      gray = [ (b |*| tVar x) :=: (i |+| beta) | i <- [ 1 .. b - 1 ] ]
-  in (real,dark,gray)
-
--- 2 * x < 1  
-
--- 2 * x < y
---
--- 1 < x
---
--- shadows a=2 alpha=y beta=1 b=1
---   diff = y - 2
---   real = 0 < y - 2 = 2 < y
---   dark = 2 < y - 2 = 4 < y
---   gray = [ ]
+  let real = ctLt (a |*| beta) (b |*| alpha)
+      dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
+      gray = [ b |*| tVar x - i |+| beta | i <- [ 1 .. b - 1 ] ]
+  in (isNeg real, isNeg dark `mplus` mapM_ is0 gray)
 
 
 --------------------------------------------------------------------------------
@@ -162,7 +218,9 @@ instance MonadPlus Answer where
   mplus x y            = Choice x y
 
 instance Functor Answer where
-  fmap = liftM
+  fmap _ None           = None
+  fmap f (One x)        = One (f x)
+  fmap f (Choice x1 x2) = Choice (fmap f x1) (fmap f x2)
 
 instance Applicative Answer where
   pure  = return
@@ -195,15 +253,32 @@ updS_ f = S $ \s -> return ((), f s)
 updS :: (RW -> (a,RW)) -> S a
 updS f = S $ \s -> return (f s)
 
+get :: (RW -> a) -> S a
+get f = S $ \s -> return (f s, s)
+
 newVar :: S Name
 newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
 
 getUBs :: Name -> S [(Integer, Term)]
-getUBs x = S $ \rw -> return (Map.findWithDefault [] x (upperBounds rw), rw)
+getUBs x = get $ Map.findWithDefault [] x . upperBounds . inerts
 
 getLBs :: Name -> S [(Integer, Term)]
-getLBs x = S $ \rw -> return (Map.findWithDefault [] x (lowerBounds rw), rw)
+getLBs x = get $ Map.findWithDefault [] x . lowerBounds . inerts
 
-testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = [] }
+getIs0 :: S (Maybe Term)
+getIs0 = updS $ \rw ->
+  let work = todo rw
+  in case zeroTerms work of
+       []     -> (Nothing, rw)
+       t : ts -> (Just t,  rw { todo = work { zeroTerms = ts } })
 
+getIsNeg :: S (Maybe Term)
+getIsNeg = updS $ \rw ->
+  let work = todo rw
+  in case negTerms work of
+       []     -> (Nothing, rw)
+       t : ts -> (Just t,  rw { todo = work { negTerms = ts } })
+
+
+testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = qEmpty }
 
