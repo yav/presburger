@@ -17,15 +17,15 @@ data RW = RW { nameSource :: !Int
 
 solveAll :: S ()
 solveAll =
-  do mbEq <- getIs0
+  do mbEq <- getWork qZeroTerms
      case mbEq of
        Just p  -> solveIs0 p >> solveAll
        Nothing ->
-         do mbLt <- getIsNeg
+         do mbLt <- getWork qNegTerms
             case mbLt of
               Just p  -> solveIsNeg p >> solveAll
               Nothing ->
-                do mbDarkGray <- getDarkGray
+                do mbDarkGray <- getWork qDarkGrayTerms
                    case mbDarkGray of
                      Just (p,ps) ->
                         msum (solveIsNeg p : map solveIs0 ps) >> solveAll
@@ -47,11 +47,24 @@ qEmpty :: WorkQ
 qEmpty = WorkQ { zeroTerms = [], negTerms = [], darkGrayTerms = [] }
 
 qLet :: Name -> Term -> WorkQ -> WorkQ
-qLet x t q = WorkQ { zeroTerms = map (tLet x t) (zeroTerms q)
-                   , negTerms  = map (tLet x t) (negTerms  q)
-                   , darkGrayTerms  = [ (tLet x t t1, map (tLet x t) ts)
-                                               | (t1,ts) <- darkGrayTerms q ]
+qLet x t q = WorkQ { zeroTerms      = map (tLet x t) (zeroTerms q)
+                   , negTerms       = map (tLet x t) (negTerms  q)
+                   , darkGrayTerms  =
+                      [ ( tLet x t t1
+                        , map (tLet x t) ts) | (t1,ts) <- darkGrayTerms q ]
                    }
+
+type Field t = (WorkQ -> [t], [t] -> WorkQ -> WorkQ)
+
+qZeroTerms :: Field Term
+qZeroTerms = (zeroTerms, \a q -> q { zeroTerms = a })
+
+qNegTerms :: Field Term
+qNegTerms = (negTerms, \a q -> q { negTerms = a })
+
+qDarkGrayTerms :: Field (Term, [Term])
+qDarkGrayTerms = (darkGrayTerms, \a q -> q { darkGrayTerms = a })
+
 
 ctLt :: Term -> Term -> Term
 ctLt t1 t2 = t1 - t2
@@ -102,31 +115,6 @@ iSolved x t i =
        , Map.filter (not . null) (fmap snd mp2)
        )
 
-
--- Assumes substitution has already been applied
-addSolved :: Name -> Term -> S ()
-addSolved x t = updS_ $ \rw ->
-  let (newWork,newInerts) = iSolved x t (inerts rw)
-  in rw { inerts = newInerts
-        , todo   = qLet x t $
-                     let work = todo rw
-                     in work { negTerms = newWork ++ negTerms work }
-        }
-
--- Add equality work
-is0 :: Term -> S ()
-is0 t = updS_ $ \rw -> rw { todo = let work = todo rw
-                                   in work { zeroTerms = t : zeroTerms work } }
-
--- Add non-equality work
-isNeg :: Term -> S ()
-isNeg t = updS_ $ \rw -> rw { todo = let work = todo rw
-                                     in work { negTerms = t : negTerms work } }
-
-isDarkGray :: (Term, [Term]) -> S ()
-isDarkGray t = updS_ $ \rw -> rw { todo = let work = todo rw
-                                     in work { darkGrayTerms = t : darkGrayTerms work } }
-
 -- Assumes substitution has already been applied
 -- c + xs = 0
 solveIs0 :: Term -> S ()
@@ -146,7 +134,7 @@ solveIs0 t
     addSolved x (if xc > 0 then negate s else s)
 
   -- K * S = 0
-  | Just (_, s) <- tFactor t  = is0 s
+  | Just (_, s) <- tFactor t  = addWork qZeroTerms s
 
   -- See Section 3.1 of paper for details.
   -- We obtain an equivalent formulation but with smaller coefficients.
@@ -159,7 +147,7 @@ solveIs0 t
          addSolved xk soln
 
          let upd i = div (2*i + m) (2*m) + modulus i m
-         is0 (negate (abs ak) |*| tVar v + tMapCoeff upd s)
+         addWork qZeroTerms (negate (abs ak) |*| tVar v + tMapCoeff upd s)
 
   | otherwise = error "solveIs0: unreachable"
 
@@ -175,7 +163,7 @@ solveIsNeg t
   | Just a <- isConst t = guard (a < 0)
 
   -- K * S < 0
-  | Just (_,s) <- tFactor t = isNeg s
+  |Just (_,s) <- tFactor t = addWork qNegTerms s
 
   -- See Section 5.1 of the paper
   | Just (xc,x,s) <- tLeastVar t =
@@ -183,13 +171,13 @@ solveIsNeg t
     do ctrs <- if xc < 0
                -- -XC*x + S < 0
                -- S < XC*x
-               then do ubs <- getUBs x
+               then do ubs <- getBounds upperBounds x
                        let b    = negate xc
                            beta = s
                        return [ (a,alpha,b,beta) | (a,alpha) <- ubs ]
                -- XC*x + S < 0
                -- XC*x < -S
-               else do lbs <- getLBs x
+               else do lbs <- getBounds lowerBounds x
                        let a     = xc
                            alpha = negate s
                        return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
@@ -198,8 +186,8 @@ solveIsNeg t
           do let real = ctLt (a |*| beta) (b |*| alpha)
                  dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
                  gray = [ b |*| tVar x - i |+| beta | i <- [ 1 .. b - 1 ] ]
-             isNeg real
-             isDarkGray (dark, gray)
+             addWork qNegTerms real
+             addWork qDarkGrayTerms (dark, gray)
              ) ctrs
 
   | otherwise = error "solveIsNeg: unreachable"
@@ -284,51 +272,43 @@ instance Applicative S where
   pure  = return
   (<*>) = ap
 
-
-updS_ :: (RW -> RW) -> S ()
-updS_ f = S $ \s -> return ((), f s)
-
 updS :: (RW -> (a,RW)) -> S a
 updS f = S $ \s -> return (f s)
 
+updS_ :: (RW -> RW) -> S ()
+updS_ f = updS $ \rw -> ((),f rw)
+
 get :: (RW -> a) -> S a
-get f = S $ \s -> return (f s, s)
+get f = updS $ \rw -> (f rw, rw)
 
 newVar :: S Name
 newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
 
-getUBs :: Name -> S [(Integer, Term)]
-getUBs x = get $ Map.findWithDefault [] x . upperBounds . inerts
-
-getLBs :: Name -> S [(Integer, Term)]
-getLBs x = get $ Map.findWithDefault [] x . lowerBounds . inerts
-
-
-
-
-getIs0 :: S (Maybe Term)
-getIs0 = updS $ \rw ->
+getWork :: Field t -> S (Maybe t)
+getWork (getF,setF) = updS $ \rw ->
   let work = todo rw
-  in case zeroTerms work of
+  in case getF work of
        []     -> (Nothing, rw)
-       t : ts -> (Just t,  rw { todo = work { zeroTerms = ts } })
+       t : ts -> (Just t,  rw { todo = setF ts work })
 
-getIsNeg :: S (Maybe Term)
-getIsNeg = updS $ \rw ->
+addWork :: Field t -> t -> S ()
+addWork (getF,setF) t = updS_ $ \rw ->
   let work = todo rw
-  in case negTerms work of
-       []     -> (Nothing, rw)
-       t : ts -> (Just t,  rw { todo = work { negTerms = ts } })
+  in rw { todo = setF (t : getF work) work }
 
-getDarkGray :: S (Maybe (Term, [Term]))
-getDarkGray = updS $ \rw ->
-  let work = todo rw
-  in case darkGrayTerms work of
-       []     -> (Nothing, rw)
-       t : ts -> (Just t,  rw { todo = work { darkGrayTerms = ts } })
+getBounds :: (Inerts -> IntMap [a]) -> Name -> S [a]
+getBounds f x = get $ Map.findWithDefault [] x . f . inerts
 
 
+-- Assumes substitution has already been applied
+addSolved :: Name -> Term -> S ()
+addSolved x t = updS_ $ \rw ->
+  let (newWork,newInerts) = iSolved x t (inerts rw)
+  in rw { inerts = newInerts
+        , todo   = qLet x t $
+                     let work = todo rw
+                     in work { negTerms = newWork ++ negTerms work }
+        }
 
 
-testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = qEmpty }
 
