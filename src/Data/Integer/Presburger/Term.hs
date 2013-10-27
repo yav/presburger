@@ -118,6 +118,7 @@ k |*| T n m = T (k * n) (fmap (k *) m)
 
 -- | Add a constant, a more efficient version of (+)
 (|+|) :: Integer -> Term -> Term
+0 |+| t     = t
 k |+| T n m = T (k + n) m
 
 -- | Get the coefficient of a term.  Returns 0 if the variable does not occur.
