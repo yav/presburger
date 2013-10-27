@@ -24,7 +24,12 @@ solveAll =
          do mbLt <- getIsNeg
             case mbLt of
               Just p  -> solveIsNeg p >> solveAll
-              Nothing -> return ()
+              Nothing ->
+                do mbDarkGray <- getDarkGray
+                   case mbDarkGray of
+                     Just (p,ps) ->
+                        msum (solveIsNeg p : map solveIs0 ps) >> solveAll
+                     Nothing -> return ()
 
 
 
@@ -32,16 +37,20 @@ solveAll =
 --------------------------------------------------------------------------------
 -- The work queue
 
-data WorkQ = WorkQ { zeroTerms :: [Term]    -- ^ t == 0
-                   , negTerms  :: [Term]    -- ^ t <  0
+data WorkQ = WorkQ { zeroTerms     :: [Term]    -- ^ t == 0
+                   , negTerms      :: [Term]    -- ^ t <  0
+                   , darkGrayTerms :: [(Term,[Term])]
+                     -- ^ t < 0 || any (== 0) ts
                    } deriving Show
 
 qEmpty :: WorkQ
-qEmpty = WorkQ { zeroTerms = [], negTerms = [] }
+qEmpty = WorkQ { zeroTerms = [], negTerms = [], darkGrayTerms = [] }
 
 qLet :: Name -> Term -> WorkQ -> WorkQ
 qLet x t q = WorkQ { zeroTerms = map (tLet x t) (zeroTerms q)
                    , negTerms  = map (tLet x t) (negTerms  q)
+                   , darkGrayTerms  = [ (tLet x t t1, map (tLet x t) ts)
+                                               | (t1,ts) <- darkGrayTerms q ]
                    }
 
 ctLt :: Term -> Term -> Term
@@ -114,6 +123,10 @@ isNeg :: Term -> S ()
 isNeg t = updS_ $ \rw -> rw { todo = let work = todo rw
                                      in work { negTerms = t : negTerms work } }
 
+isDarkGray :: (Term, [Term]) -> S ()
+isDarkGray t = updS_ $ \rw -> rw { todo = let work = todo rw
+                                     in work { darkGrayTerms = t : darkGrayTerms work } }
+
 -- Assumes substitution has already been applied
 -- c + xs = 0
 solveIs0 :: Term -> S ()
@@ -167,33 +180,42 @@ solveIsNeg t
   -- See Section 5.1 of the paper
   | Just (xc,x,s) <- tLeastVar t =
 
-    if xc < 0
-        -- -XC*x + S < 0
-        -- S < XC*x
-        then do ubs <- getUBs x
-                let b    = negate xc
-                    beta = s
-                addShadows [ shadows x a alpha beta b | (a,alpha) <- ubs ]
-        -- XC*x + S < 0
-        -- XC*x < -S
-        else do lbs <- getLBs x
-                let a     = xc
-                    alpha = negate s
-                addShadows [ shadows x a alpha beta b | (b,beta) <- lbs ]
+    do ctrs <- if xc < 0
+               -- -XC*x + S < 0
+               -- S < XC*x
+               then do ubs <- getUBs x
+                       let b    = negate xc
+                           beta = s
+                       return [ (a,alpha,b,beta) | (a,alpha) <- ubs ]
+               -- XC*x + S < 0
+               -- XC*x < -S
+               else do lbs <- getLBs x
+                       let a     = xc
+                           alpha = negate s
+                       return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
+
+       mapM_ (\(a,alpha,b,beta) ->
+          do let real = ctLt (a |*| beta) (b |*| alpha)
+                 dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
+                 gray = [ b |*| tVar x - i |+| beta | i <- [ 1 .. b - 1 ] ]
+             isNeg real
+             isDarkGray (dark, gray)
+             ) ctrs
 
   | otherwise = error "solveIsNeg: unreachable"
 
-addShadows :: [(S (), S ())] -> S ()
-addShadows shs =
-  do let (reals,dark_grays) = unzip shs
-     sequence_ reals
-     sequence_ dark_grays
 
+{- Note [Shadows]
 
-{- P: beta < b * x
-   Q: a * x < alpha
+  P: beta < b * x
+  Q: a * x < alpha
 
-real: a * beta < a * b * x < b * alpha
+real: a * beta < b * alpha
+
+  beta     < b * x      -- from P
+  a * beta < a * b * x  -- (a *)
+  a * beta < b * alpha  -- comm. and Q
+
 
 dark: b * alpha - a * beta > a * b
 
@@ -213,12 +235,6 @@ We stop at @b - 1@ because if:
 
 which is covered by the dark shadow.
 -}
-shadows :: Name -> Integer -> Term -> Term -> Integer -> (S (), S())
-shadows x a alpha beta b =
-  let real = ctLt (a |*| beta) (b |*| alpha)
-      dark = ctLt (fromInteger (a * b)) (b |*| alpha - a |*| beta)
-      gray = [ b |*| tVar x - i |+| beta | i <- [ 1 .. b - 1 ] ]
-  in (isNeg real, isNeg dark `mplus` mapM_ is0 gray)
 
 
 --------------------------------------------------------------------------------
@@ -287,6 +303,9 @@ getUBs x = get $ Map.findWithDefault [] x . upperBounds . inerts
 getLBs :: Name -> S [(Integer, Term)]
 getLBs x = get $ Map.findWithDefault [] x . lowerBounds . inerts
 
+
+
+
 getIs0 :: S (Maybe Term)
 getIs0 = updS $ \rw ->
   let work = todo rw
@@ -300,6 +319,15 @@ getIsNeg = updS $ \rw ->
   in case negTerms work of
        []     -> (Nothing, rw)
        t : ts -> (Just t,  rw { todo = work { negTerms = ts } })
+
+getDarkGray :: S (Maybe (Term, [Term]))
+getDarkGray = updS $ \rw ->
+  let work = todo rw
+  in case darkGrayTerms work of
+       []     -> (Nothing, rw)
+       t : ts -> (Just t,  rw { todo = work { darkGrayTerms = ts } })
+
+
 
 
 testRun (S m) = m RW { nameSource = -1, inerts = noInerts, todo = qEmpty }
