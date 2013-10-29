@@ -81,13 +81,10 @@ ctGt t1 t2 = ctLt t2 t1
 
 -- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
-  { upperBounds :: IntMap [(Integer,Term)]
-    -- ^ Known upper bounds for variables.
-    -- An entry: @x |-> (c,t)@ asserts that @c * x < t@
-
-  , lowerBounds :: IntMap [(Integer,Term)]
-    -- ^ Known lower bounds for variables.
-    -- An entry: @x |-> (c,t)@ asserts that @t < c * x@
+  { bounds :: IntMap ([(Integer,Term)], [(Integer,Term)])
+    -- ^ Known lower and upper bounds for variables.
+    -- Each entry @(c,t)@ in the first list asserts @t < c * x@
+    -- Each entry @(c,t)@ in the second list asserts @c * x < t@
 
   , solved :: IntMap Term
     -- ^ Definitions for resolved variabless.
@@ -97,9 +94,8 @@ data Inerts = Inerts
 
 -- | An empty inert set.
 iNone :: Inerts
-iNone = Inerts { upperBounds = Map.empty
-               , lowerBounds = Map.empty
-               , solved      = Map.empty
+iNone = Inerts { bounds = Map.empty
+               , solved = Map.empty
                }
 
 -- | Rewrite a term using the definitions from an inert set.
@@ -118,23 +114,38 @@ iApSubst i t = foldr apS t $ Map.toList $ solved i
 
 iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
 iSolved x t i =
-  ( kickedOutL ++ kickedOutU
-  , Inerts { upperBounds = otherU
-           , lowerBounds = otherL
-           , solved      = Map.insert x t $ Map.map (tLet x t) $ solved i
+  ( kickedOut
+  , Inerts { bounds = otherBounds
+           , solved = Map.insert x t $ Map.map (tLet x t) $ solved i
            }
   )
   where
-  (kickedOutU, otherU) = upd ctLt (upperBounds i)
-  (kickedOutL, otherL) = upd ctGt (lowerBounds i)
+  (kickedOut, otherBounds) =
 
-  upd f mp =
-        -- xc * x < t
-    let (mb, mp1) = Map.updateLookupWithKey (\_ _ -> Nothing) x mp
+    let (mb, mp1) = Map.updateLookupWithKey (\_ _ -> Nothing) x (bounds i)
+
+        check (c,t1) if tHasVar x t1 then Right 
+
+        upd y (lbs,ubs) = let (lbsStay, lbsKick) = partition stay lbs
+                              (ubsStay, ubsKick) = partition stay ubs
+                          in ( (lbsStay,ubsStay)
+                             , [ 
 
         -- xy * y < t(x)
         mp2       = fmap (partition (tHasVar x . snd)) mp1
-    in ( [ f (xc |*| t) t1 | (xc,t1) <- concat (maybeToList mb) ]
+
+    in ( [ ct | (lbs,ubs) <- maybeToList mb
+              ,  ct <- [ ctLt lb (c |*| t) | (c,lb) <- lbs ] ++
+                       [ ctLt (c |*| t) ub | (c,ub) <- ubs ]
+         ] ++
+
+         [      (y, (lbs,ubs)) <- Map.toList mp1
+         , 
+
+         ]
+
+
+
       ++ [ f (yc |*| tVar y) (tLet x t t1) | (y,(vs,_)) <- Map.toList mp2,
                                              (yc,t1)    <- vs ]
        , Map.filter (not . null) (fmap snd mp2)
@@ -201,13 +212,13 @@ solveIsNeg t
     do ctrs <- if xc < 0
                -- -XC*x + S < 0
                -- S < XC*x
-               then do ubs <- getBounds upperBounds x
+               then do ubs <- getBounds (snd . bounds) x
                        let b    = negate xc
                            beta = s
                        return [ (a,alpha,b,beta) | (a,alpha) <- ubs ]
                -- XC*x + S < 0
                -- XC*x < -S
-               else do lbs <- getBounds lowerBounds x
+               else do lbs <- getBounds (fst . bounds) x
                        let a     = xc
                            alpha = negate s
                        return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
@@ -220,6 +231,8 @@ solveIsNeg t
              addWork qNegTerms real
              msum (addWork qNegTerms dark : map (addWork qZeroTerms) gray)
              ) ctrs
+
+      -- XXX: Add constraint!
 
   | otherwise = error "solveIsNeg: unreachable"
 
@@ -344,6 +357,5 @@ addDef x t = updS_ $ \rw ->
                      let work = todo rw
                      in work { negTerms = newWork ++ negTerms work }
         }
-
 
 
