@@ -224,12 +224,14 @@ solveIsNeg t
                then do ubs <- getBounds Upper x
                        let b    = negate xc
                            beta = s
+                       addBound Lower x (Bound b beta)
                        return [ (a,alpha,b,beta) | Bound a alpha <- ubs ]
                -- XC*x + S < 0
                -- XC*x < -S
                else do lbs <- getBounds Lower x
                        let a     = xc
                            alpha = negate s
+                       addBound Upper x (Bound a alpha)
                        return [ (a,alpha,b,beta) | Bound b beta <- lbs ]
 
       -- See Note [Shadows]
@@ -359,6 +361,15 @@ getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
                                Just bs -> case f of
                                             Lower -> fst bs
                                             Upper -> snd bs
+
+addBound :: BoundType -> Name -> Bound -> S ()
+addBound bt x b = updS_ $ \rw ->
+  let i = inerts rw
+      entry = case bt of
+                Lower -> ([b],[])
+                Upper -> ([],[b])
+      jn (newL,newU) (oldL,oldU) = (newL++oldL, newU++oldU)
+  in rw { inerts = i { bounds = Map.insertWith jn x entry (bounds i) }}
 
 -- | Add a new definition.
 -- Assumes substitution has already been applied
