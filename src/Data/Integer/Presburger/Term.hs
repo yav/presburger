@@ -23,6 +23,8 @@ module Data.Integer.Presburger.Term
   , tLetNum
   , tLetNums
   , tVars
+  , tVarList
+  , tConstPart
   ) where
 
 import qualified Data.IntMap as Map
@@ -150,6 +152,9 @@ isConst (T n m)
   | Map.null m  = Just n
   | otherwise   = Nothing
 
+tConstPart :: Term -> Integer
+tConstPart (T n _) = n
+
 -- | Returns: @Just (a, b, x)@ if the term is the form: @a + b * x@
 tIsOneVar :: Term -> Maybe (Integer, Integer, Name)
 tIsOneVar (T a m) = case Map.toList m of
@@ -173,6 +178,9 @@ tGetSimpleCoeff (T a m) =
 -- | The variables mentioned in this term.
 tVars :: Term -> IntSet
 tVars (T _ m) = Map.keysSet m
+
+tVarList :: Term -> [Name]
+tVarList (T _ m) = Map.keys m
 
 
 -- | Try to factor-out a common consant (> 1) from a term.

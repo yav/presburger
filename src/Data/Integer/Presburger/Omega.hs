@@ -5,7 +5,7 @@ import Data.Integer.Presburger.Term
 import           Data.IntMap (IntMap)
 import qualified Data.IntMap as Map
 import Data.List(partition)
-import Data.Maybe(maybeToList)
+import Data.Maybe(maybeToList,fromMaybe)
 import Control.Applicative
 import Control.Monad
 
@@ -159,6 +159,46 @@ iSolved x t i =
   stay (Bound _ bnd) = not (tHasVar x bnd)
 
 
+-- Given a list of lower (resp. upper) bounds, compute the least (resp. largest)
+-- value that satisfies them all.
+iPickBounded :: BoundType -> [Bound] -> Maybe Integer
+iPickBounded bt bs = go bs Nothing
+  where
+  go [] mb = mb
+  go (Bound c t : more) mb =
+    do k <- isConst t
+       let t1 = maybe k (combine k) mb
+       go more $ Just $ compute t1 c
+
+  combine = case bt of
+              Lower -> max
+              Upper -> min
+
+  compute v c = case bt of
+                  Lower -> div v c + 1
+                  Upper -> let (q,r) = divMod v c
+                           in if r == 0 then q - 1 else q
+
+
+iModel :: Inerts -> [(Name,Integer)]
+iModel i = goBounds [] (bounds i)
+  where
+  goBounds su mp =
+    case Map.maxViewWithKey mp of
+      Nothing -> goEqs su $ Map.toList $ solved i
+      Just ((x,(lbs0,ubs0)), mp1) ->
+        let lbs = [ Bound c (tLetNums su t) | Bound c t <- lbs0 ]
+            ubs = [ Bound c (tLetNums su t) | Bound c t <- ubs0 ]
+            sln = fromMaybe 0
+                $ mplus (iPickBounded Lower lbs) (iPickBounded Upper ubs)
+        in goBounds ((x,sln) : su) mp1
+
+  goEqs su [] = su
+  goEqs su ((x,t) : more) =
+    let t1  = tLetNums su t
+        vs  = tVarList t1
+        su1 = [ (v,0) | v <- vs ] ++ (x,tConstPart t1) : su
+    in goEqs su1 more
 
 
 --------------------------------------------------------------------------------
