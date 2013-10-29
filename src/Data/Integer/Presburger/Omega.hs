@@ -79,12 +79,15 @@ ctGt t1 t2 = ctLt t2 t1
 --------------------------------------------------------------------------------
 -- Inert set
 
+
+type Bound = (Integer,Term)
+
 -- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
-  { bounds :: IntMap ([(Integer,Term)], [(Integer,Term)])
+  { bounds :: IntMap ([Bound],[Bound])
     -- ^ Known lower and upper bounds for variables.
-    -- Each entry @(c,t)@ in the first list asserts @t < c * x@
-    -- Each entry @(c,t)@ in the second list asserts @c * x < t@
+    -- Each bound @(c,t)@ in the first list asserts that  @t < c * x@
+    -- Each bound @(c,t)@ in the second list asserts that @c * x < t@
 
   , solved :: IntMap Term
     -- ^ Definitions for resolved variabless.
@@ -122,34 +125,32 @@ iSolved x t i =
   where
   (kickedOut, otherBounds) =
 
+        -- First, we eliminate all entries for `x`
     let (mb, mp1) = Map.updateLookupWithKey (\_ _ -> Nothing) x (bounds i)
 
-        check (c,t1) if tHasVar x t1 then Right 
-
-        upd y (lbs,ubs) = let (lbsStay, lbsKick) = partition stay lbs
-                              (ubsStay, ubsKick) = partition stay ubs
-                          in ( (lbsStay,ubsStay)
-                             , [ 
-
-        -- xy * y < t(x)
-        mp2       = fmap (partition (tHasVar x . snd)) mp1
+        -- Next, we elminate all constraints that mentiond `x` in bounds
+        mp2 = Map.mapWithKey extractBounds mp1
 
     in ( [ ct | (lbs,ubs) <- maybeToList mb
               ,  ct <- [ ctLt lb (c |*| t) | (c,lb) <- lbs ] ++
                        [ ctLt (c |*| t) ub | (c,ub) <- ubs ]
          ] ++
+         [ ct | (_,cts) <- Map.elems mp2, ct <- cts ]
 
-         [      (y, (lbs,ubs)) <- Map.toList mp1
-         , 
-
-         ]
-
-
-
-      ++ [ f (yc |*| tVar y) (tLet x t t1) | (y,(vs,_)) <- Map.toList mp2,
-                                             (yc,t1)    <- vs ]
-       , Map.filter (not . null) (fmap snd mp2)
+       , fmap fst mp2
        )
+
+  extractBounds y (lbs,ubs) =
+    let (lbsStay, lbsKick) = partition stay lbs
+        (ubsStay, ubsKick) = partition stay ubs
+    in ( (lbsStay,ubsStay)
+       , [ ctLt (tLet x t lb) (c |*| tVar y) | (c,lb) <- lbsKick ] ++
+         [ ctLt (c |*| tVar y) (tLet x t ub) | (c,ub) <- ubsKick ]
+       )
+
+  stay (_,bnd) = not (tHasVar x bnd)
+
+
 
 
 --------------------------------------------------------------------------------
@@ -212,13 +213,13 @@ solveIsNeg t
     do ctrs <- if xc < 0
                -- -XC*x + S < 0
                -- S < XC*x
-               then do ubs <- getBounds (snd . bounds) x
+               then do ubs <- getBounds snd x
                        let b    = negate xc
                            beta = s
                        return [ (a,alpha,b,beta) | (a,alpha) <- ubs ]
                -- XC*x + S < 0
                -- XC*x < -S
-               else do lbs <- getBounds (fst . bounds) x
+               else do lbs <- getBounds fst x
                        let a     = xc
                            alpha = negate s
                        return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
@@ -343,9 +344,11 @@ addWork (getF,setF) t = updS_ $ \rw ->
   let work = todo rw
   in rw { todo = setF (t : getF work) work }
 
--- | Get upper or lower bounds for a variable.
-getBounds :: (Inerts -> IntMap [a]) -> Name -> S [a]
-getBounds f x = get $ Map.findWithDefault [] x . f . inerts
+-- | Get lower ('fst'), or upper ('snd') bounds for a variable.
+getBounds :: (([Bound],[Bound]) -> [Bound]) -> Name -> S [Bound]
+getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
+                               Nothing -> []
+                               Just bs -> f bs
 
 -- | Add a new definition.
 -- Assumes substitution has already been applied
