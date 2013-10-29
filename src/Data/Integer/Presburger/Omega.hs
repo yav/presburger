@@ -68,7 +68,7 @@ qNegTerms :: Field Term
 qNegTerms = (negTerms, \a q -> q { negTerms = a })
 
 --------------------------------------------------------------------------------
--- Constraints
+-- Constraints and Bound on Variables
 
 ctLt :: Term -> Term -> Term
 ctLt t1 t2 = t1 - t2
@@ -76,11 +76,20 @@ ctLt t1 t2 = t1 - t2
 ctGt :: Term -> Term -> Term
 ctGt t1 t2 = ctLt t2 t1
 
+data Bound      = Bound Integer Term
+                  deriving Show
+
+data BoundType  = Lower | Upper
+                  deriving Show
+
+toCt :: BoundType -> Name -> Bound -> Term
+toCt Lower x (Bound c t) = ctLt t              (c |*| tVar x)
+toCt Upper x (Bound c t) = ctLt (c |*| tVar x) t
+
+
+
 --------------------------------------------------------------------------------
 -- Inert set
-
-
-type Bound = (Integer,Term)
 
 -- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
@@ -132,9 +141,8 @@ iSolved x t i =
         mp2 = Map.mapWithKey extractBounds mp1
 
     in ( [ ct | (lbs,ubs) <- maybeToList mb
-              ,  ct <- [ ctLt lb (c |*| t) | (c,lb) <- lbs ] ++
-                       [ ctLt (c |*| t) ub | (c,ub) <- ubs ]
-         ] ++
+              ,  ct <- map (toCt Lower x) lbs ++ map (toCt Upper x) ubs ]
+         ++
          [ ct | (_,cts) <- Map.elems mp2, ct <- cts ]
 
        , fmap fst mp2
@@ -144,11 +152,11 @@ iSolved x t i =
     let (lbsStay, lbsKick) = partition stay lbs
         (ubsStay, ubsKick) = partition stay ubs
     in ( (lbsStay,ubsStay)
-       , [ ctLt (tLet x t lb) (c |*| tVar y) | (c,lb) <- lbsKick ] ++
-         [ ctLt (c |*| tVar y) (tLet x t ub) | (c,ub) <- ubsKick ]
+       , map (toCt Lower y) lbsKick ++
+         map (toCt Upper y) ubsKick
        )
 
-  stay (_,bnd) = not (tHasVar x bnd)
+  stay (Bound _ bnd) = not (tHasVar x bnd)
 
 
 
@@ -213,16 +221,16 @@ solveIsNeg t
     do ctrs <- if xc < 0
                -- -XC*x + S < 0
                -- S < XC*x
-               then do ubs <- getBounds snd x
+               then do ubs <- getBounds Upper x
                        let b    = negate xc
                            beta = s
-                       return [ (a,alpha,b,beta) | (a,alpha) <- ubs ]
+                       return [ (a,alpha,b,beta) | Bound a alpha <- ubs ]
                -- XC*x + S < 0
                -- XC*x < -S
-               else do lbs <- getBounds fst x
+               else do lbs <- getBounds Lower x
                        let a     = xc
                            alpha = negate s
-                       return [ (a,alpha,b,beta) | (b,beta) <- lbs ]
+                       return [ (a,alpha,b,beta) | Bound b beta <- lbs ]
 
       -- See Note [Shadows]
        mapM_ (\(a,alpha,b,beta) ->
@@ -345,10 +353,12 @@ addWork (getF,setF) t = updS_ $ \rw ->
   in rw { todo = setF (t : getF work) work }
 
 -- | Get lower ('fst'), or upper ('snd') bounds for a variable.
-getBounds :: (([Bound],[Bound]) -> [Bound]) -> Name -> S [Bound]
+getBounds :: BoundType -> Name -> S [Bound]
 getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
                                Nothing -> []
-                               Just bs -> f bs
+                               Just bs -> case f of
+                                            Lower -> fst bs
+                                            Upper -> snd bs
 
 -- | Add a new definition.
 -- Assumes substitution has already been applied
