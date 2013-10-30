@@ -1,5 +1,11 @@
 {-# LANGUAGE PatternGuards #-}
-module Data.Integer.Presburger.Omega where
+module Data.Integer.Presburger.Omega
+  ( State
+  , initState
+  , assertEq
+  , assertLt
+  , checkSat
+  ) where
 
 import Data.Integer.Presburger.Term
 import           Data.IntMap (IntMap)
@@ -10,19 +16,51 @@ import Control.Applicative
 import Control.Monad
 
 
+
+
+
 --------------------------------------------------------------------------------
 -- Solver interface
 
-assertEq :: Term -> Term -> S ()
-assertEq t1 t2 =
+newtype State = State (Answer RW)
+
+initState :: State
+initState = State $ return initRW
+
+assertEq :: Term -> Term -> State -> State
+assertEq t1 t2 rw =
+  run rw $
   do i <- get inerts
      addWork qZeroTerms $ iApSubst i (t1 - t2)
+     solveAll
 
-assertLt :: Term -> Term -> S ()
-assertLt t1 t2 =
+assertLt :: Term -> Term -> State -> State
+assertLt t1 t2 rw =
+  run rw $
   do i <- get inerts
      addWork qNegTerms $ iApSubst i (t1 - t2)
+     solveAll
 
+checkSat :: State -> Maybe [(Name,Integer)]
+checkSat (State m) = go m
+  where
+  go None            = Nothing
+  go (One rw)        = Just $ iModel $ inerts rw
+  go (Choice m1 m2)  = mplus (go m1) (go m2)
+
+run :: State -> S () -> State
+run (State rws) (S m) =
+  State $
+  do rw <- rws
+     (_,rw1) <- m rw
+     return rw1
+
+example =
+  checkSat
+    $ assertLt (tVar 1) 9
+    $ assertLt 7 (tVar 1)
+--    $ assertEq (tVar 1) 5
+      initState
 
 
 --------------------------------------------------------------------------------
@@ -31,6 +69,9 @@ data RW = RW { nameSource :: !Int
              , todo       :: WorkQ
              , inerts     :: Inerts
              } deriving Show
+
+initRW :: RW
+initRW = RW { nameSource = -1, todo = qEmpty, inerts = iNone }
 
 solveAll :: S ()
 solveAll =
