@@ -2,9 +2,10 @@
 module Data.Integer.Presburger.Omega
   ( State
   , initState
-  , assertEq
-  , assertLt
   , checkSat
+  , assert
+  , Prop(..)
+  , Expr(..)
   ) where
 
 import Data.Integer.Presburger.Term
@@ -15,9 +16,17 @@ import Data.Maybe(maybeToList,fromMaybe)
 import Control.Applicative
 import Control.Monad
 
+infixr 2 :||
+infixr 3 :&&
+infix  4 :==, :/=, :<, :<=, :>, :>=
+infixl 6 :+, :-
+infixl 7 :*
 
 
-
+example = test (If (x :> y) y z :== z :+ K 1)
+  where
+  test p = checkSat $ assert p initState
+  x : y : z : _ = map Var [ 1 .. ]
 
 --------------------------------------------------------------------------------
 -- Solver interface
@@ -27,26 +36,115 @@ newtype State = State (Answer RW)
 initState :: State
 initState = State $ return initRW
 
-assertEq :: Term -> Term -> State -> State
-assertEq t1 t2 rw =
-  run rw $
-  do i <- get inerts
-     addWork qZeroTerms $ iApSubst i (t1 - t2)
-     solveAll
-
-assertLt :: Term -> Term -> State -> State
-assertLt t1 t2 rw =
-  run rw $
-  do i <- get inerts
-     addWork qNegTerms $ iApSubst i (t1 - t2)
-     solveAll
-
 checkSat :: State -> Maybe [(Name,Integer)]
 checkSat (State m) = go m
   where
   go None            = Nothing
-  go (One rw)        = Just $ iModel $ inerts rw
+  go (One rw)        = Just $ filter ((>= 0) . fst) $ iModel $ inerts rw
   go (Choice m1 m2)  = mplus (go m1) (go m2)
+
+assert :: Prop -> State -> State
+assert p s = run s (prop p)
+
+
+
+
+data Prop = PTrue
+          | PFalse
+          | Prop :|| Prop
+          | Prop :&& Prop
+          | Not Prop
+          | Expr :== Expr
+          | Expr :/= Expr
+          | Expr :<  Expr
+          | Expr :>  Expr
+          | Expr :<= Expr
+          | Expr :>= Expr
+
+-- | Variable names must be positive
+data Expr = Expr :+ Expr
+          | Expr :- Expr
+          | Integer :* Expr
+          | Negate Expr
+          | Var Int
+          | K Integer
+          | If Prop Expr Expr
+          | Div Expr Integer
+          | Mod Expr Integer
+
+prop :: Prop -> S ()
+prop PTrue       = return ()
+prop PFalse      = mzero
+prop (p1 :|| p2) = prop p1 `mplus` prop p2
+prop (p1 :&& p2) = prop p1 >> prop p2
+prop (Not p)     = prop (neg p)
+  where
+  neg PTrue       = PFalse
+  neg PFalse      = PTrue
+  neg (p1 :&& p2) = neg p1 :|| neg p2
+  neg (p1 :|| p2) = neg p1 :&& neg p2
+  neg (Not q)     = q
+  neg (e1 :== e2) = e1 :/= e2
+  neg (e1 :/= e2) = e1 :== e2
+  neg (e1 :<  e2) = e1 :>= e2
+  neg (e1 :<= e2) = e1 :>  e2
+  neg (e1 :>  e2) = e1 :<= e2
+  neg (e1 :>= e2) = e1 :<  e2
+
+prop (e1 :== e2) = do t1 <- expr e1
+                      t2 <- expr e2
+                      assertEq t1 t2
+
+prop (e1 :/= e2)  = do t1 <- expr e1
+                       t2 <- expr e2
+                       assertLt t1 t2 `mplus` assertLt t2 t1
+
+prop (e1 :< e2)   = do t1 <- expr e1
+                       t2 <- expr e2
+                       assertLt t1 t2
+
+prop (e1 :<= e2)  = do t1 <- expr e1
+                       t2 <- expr e2
+                       assertEq t1 t2 `mplus` assertLt t1 t2
+
+prop (e1 :> e2)   = prop (e2 :<  e1)
+prop (e1 :>= e2)  = prop (e2 :<= e1)
+
+
+expr :: Expr -> S Term
+expr (e1 :+ e2)   = (+)     <$> expr e1 <*> expr e2
+expr (e1 :- e2)   = (-)     <$> expr e1 <*> expr e2
+expr (k  :* e2)   = (k |*|) <$> expr e2
+expr (Negate e)   = negate <$> expr e
+expr (Var x)      = pure (tVar x)
+expr (K x)        = pure (fromInteger x)
+expr (If p e1 e2) = do x <- newVar
+                       prop (p :&& Var x :== e1 :|| Not p :&& Var x :== e2)
+                       return (tVar x)
+expr (Div e k)    = do guard (k /= 0) -- Always Unsat
+                       q <- newVar
+                       prop (k :* Var q :== e)
+                       return (tVar q)
+expr (Mod e k)    = do guard (k /= 0) -- Always unsat
+                       q <- newVar
+                       r <- newVar
+                       let er = Var r
+                       prop (k :* Var q :+ er :== e
+                                :&& er :< K k :&& K 0 :<= er)
+                       return (tVar r)
+
+
+assertEq :: Term -> Term -> S ()
+assertEq t1 t2 =
+  do i <- get inerts
+     addWork qZeroTerms $ iApSubst i (t1 - t2)
+     solveAll
+
+assertLt :: Term -> Term -> S ()
+assertLt t1 t2 =
+  do i <- get inerts
+     addWork qNegTerms $ iApSubst i (t1 - t2)
+     solveAll
 
 run :: State -> S () -> State
 run (State rws) (S m) =
@@ -55,12 +153,6 @@ run (State rws) (S m) =
      (_,rw1) <- m rw
      return rw1
 
-example =
-  checkSat
-    $ assertLt (tVar 1) 9
-    $ assertLt 7 (tVar 1)
---    $ assertEq (tVar 1) 5
-      initState
 
 
 --------------------------------------------------------------------------------
@@ -113,9 +205,6 @@ qNegTerms = (negTerms, \a q -> q { negTerms = a })
 
 ctLt :: Term -> Term -> Term
 ctLt t1 t2 = t1 - t2
-
-ctGt :: Term -> Term -> Term
-ctGt t1 t2 = ctLt t2 t1
 
 data Bound      = Bound Integer Term
                   deriving Show
