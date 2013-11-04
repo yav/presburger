@@ -6,8 +6,9 @@ Author:         Iavor S. Diatchki
 Homepage:       http://github.com/yav/presburger
 Maintainer:     diatchki@galois.com
 Category:       Algorithms
-Synopsis:       Cooper's decision procedure for Presburger arithmetic.
-Description:    Cooper's decision procedure for Presburger arithmetic.
+Synopsis:       A decision procedure for quantifier-free linear arithmetic.
+Description:    The decision procedure is based on the algorithm used in
+                CVC4, which is itself based on the Omega test.
 Build-type:     Simple
 Cabal-version:  >= 1.6
 
@@ -15,12 +16,7 @@ library
   Build-Depends:  base < 10, containers, pretty
   hs-source-dirs: src
   Exposed-modules:
-    Data.Integer.Presburger
-  Other-modules:
-    Data.Integer.Presburger.Term
-    Data.Integer.Presburger.Exists
-    Data.Integer.Presburger.Formula
-    Data.Integer.Presburger.Div
+    Data.Integer.SAT
 
   GHC-options:    -O2 -Wall
 
