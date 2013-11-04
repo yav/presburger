@@ -47,7 +47,7 @@ assert :: Prop -> PropSet -> PropSet
 assert p (State rws) = State $ fmap snd $ m =<< rws
   where S m = prop p
 
--- | Extarct a model from a consistent set of proposition.
+-- | Extract a model from a consistent set of propositions.
 -- Returns 'Nothing' if the assertions have no model.
 -- If a variable does not appear in the assignment, then it is 0.
 checkSat :: PropSet -> Maybe [(Name,Integer)]
@@ -73,13 +73,13 @@ data Prop = PTrue
 
 -- | The type of integer expressions.
 -- Variable names must be non-negative.
-data Expr = Expr :+ Expr          -- ^ Addion
+data Expr = Expr :+ Expr          -- ^ Addition
           | Expr :- Expr          -- ^ Subtraction
           | Integer :* Expr       -- ^ Multiplication by a constant
           | Negate Expr           -- ^ Negation
           | Var Int               -- ^ Variable, name must be >= 0
           | K Integer             -- ^ Constant
-          | If Prop Expr Expr     -- ^ A conditional expresion
+          | If Prop Expr Expr     -- ^ A conditional expression
           | Div Expr Integer      -- ^ Division, rounds down
           | Mod Expr Integer      -- ^ Non-negative remainder
 
