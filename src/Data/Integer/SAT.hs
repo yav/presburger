@@ -463,7 +463,7 @@ instance Monad Answer where
 instance MonadPlus Answer where
   mzero                = None
   mplus None x         = x
-  mplus (Choice x y) z = mplus x (mplus y z)
+  -- mplus (Choice x y) z = mplus x (mplus y z)
   mplus x y            = Choice x y
 
 instance Functor Answer where
