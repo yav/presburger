@@ -15,12 +15,14 @@ module Data.Integer.SAT
   , assert
   , Prop(..)
   , Expr(..)
+  , BoundType(..)
+  , getExprBound
   ) where
 
 import           Data.IntMap (IntMap)
 import qualified Data.IntMap as Map
 import           Data.List(partition)
-import           Data.Maybe(maybeToList,fromMaybe)
+import           Data.Maybe(maybeToList,fromMaybe,mapMaybe)
 import           Control.Applicative(Applicative(..), (<$>))
 import           Control.Monad(liftM,ap,MonadPlus(..),msum,guard)
 import           Text.PrettyPrint(Doc,(<+>), (<>), integer, hsep, text)
@@ -31,12 +33,12 @@ infix  4 :==, :/=, :<, :<=, :>, :>=
 infixl 6 :+, :-
 infixl 7 :*
 
-
 --------------------------------------------------------------------------------
 -- Solver interface
 
 -- | A collection of propositions.
 newtype PropSet = State (Answer RW)
+                  deriving Show
 
 -- | An empty collection of propositions.
 noProps :: PropSet
@@ -56,6 +58,17 @@ checkSat (State m) = go m
   go None            = Nothing
   go (One rw)        = Just $ filter ((>= 0) . fst) $ iModel $ inerts rw
   go (Choice m1 m2)  = mplus (go m1) (go m2)
+
+-- | Computes bounds on the expression that are compatible with the model.
+-- Returns `Nothing` if the bound is not known.
+getExprBound :: BoundType -> Expr -> PropSet -> Maybe Integer
+getExprBound bt e (State s) =
+  do let S m          = expr e
+         check (t,s1) = iTermBound bt t (inerts s1)
+     bs <- mapM check $ toList $ s >>= m
+     case bs of
+       [] -> Nothing
+       _  -> Just (maximum bs)
 
 
 -- | The type of proposition.
@@ -204,7 +217,7 @@ ctLt t1 t2 = t1 |-| t2
 ctEq :: Term -> Term -> Term
 ctEq t1 t2 = t1 |-| t2
 
-data Bound      = Bound Integer Term
+data Bound      = Bound Integer Term  -- ^ The integer is strictly positive
                   deriving Show
 
 data BoundType  = Lower | Upper
@@ -306,6 +319,46 @@ iPickBounded bt bs = go bs Nothing
                   Lower -> div v c + 1
                   Upper -> let (q,r) = divMod v c
                            in if r == 0 then q - 1 else q
+
+
+-- | The largest (resp. least) upper (resp. lower) bound on a term
+-- that will satisfy the model
+iTermBound :: BoundType -> Term -> Inerts -> Maybe Integer
+iTermBound bt (T k xs) is = do ks <- mapM summand (Map.toList xs)
+                               return $ sum $ k : ks
+  where
+  summand (x,c) = fmap (c *) (iVarBound (newBt c) x is)
+  newBt c = if c > 0 then bt else case bt of
+                                    Lower -> Upper
+                                    Upper -> Lower
+
+
+-- | The largest (resp. least) upper (resp. lower) bound on a variable
+-- that will satisfy the model.
+iVarBound :: BoundType -> Name -> Inerts -> Maybe Integer
+iVarBound bt x is
+  | Just t <- Map.lookup x (solved is) = iTermBound bt t is
+
+iVarBound bt x is =
+  do both <- Map.lookup x (bounds is)
+     case mapMaybe fromBound (chooseBounds both) of
+       [] -> Nothing
+       bs -> return (combineBounds bs)
+  where
+  fromBound (Bound c t) = fmap (scaleBound c) (iTermBound bt t is)
+
+  combineBounds = case bt of
+                    Upper -> minimum
+                    Lower -> maximum
+
+  chooseBounds = case bt of
+                   Upper -> snd
+                   Lower -> fst
+
+  scaleBound c b = case bt of
+                     Upper -> div (b-1) c
+                     Lower -> div b c + 1
+
 
 
 iModel :: Inerts -> [(Name,Integer)]
@@ -452,6 +505,14 @@ which is covered by the dark shadow.
 
 data Answer a = None | One a | Choice (Answer a) (Answer a)
                 deriving Show
+
+toList :: Answer a -> [a]
+toList a = go a []
+  where
+  go (Choice xs ys) zs = go xs (go ys zs)
+  go (One x) xs        = x : xs
+  go None xs           = xs
+
 
 instance Monad Answer where
   return a           = One a
@@ -617,7 +678,7 @@ tLetNums xs t = foldr (\(x,i) t1 -> tLetNum x i t1) t xs
 
 
 instance Show Term where
-  showsPrec c t = showsPrec c (ppTerm t)
+  showsPrec c t = showsPrec c (show (ppTerm t))
 
 ppTerm :: Term -> Doc
 ppTerm (T k m) =
