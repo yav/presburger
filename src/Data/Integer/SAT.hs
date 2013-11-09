@@ -17,6 +17,7 @@ module Data.Integer.SAT
   , Expr(..)
   , BoundType(..)
   , getExprBound
+  , getExprRange
   ) where
 
 import           Data.IntMap (IntMap)
@@ -70,6 +71,19 @@ getExprBound bt e (State s) =
        [] -> Nothing
        _  -> Just (maximum bs)
 
+getExprRange :: Expr -> PropSet -> Maybe [Integer]
+getExprRange e (State s) =
+  do let S m          = expr e
+         check (t,s1) = do l <- iTermBound Lower t (inerts s1)
+                           u <- iTermBound Upper t (inerts s1)
+                           return (l,u)
+     bs <- mapM check $ toList $ s >>= m
+     case bs of
+       [] -> Nothing
+       _  -> let (ls,us) = unzip bs
+             in Just [ x | x <- [ minimum ls .. maximum us ] ]
+
+
 
 -- | The type of proposition.
 data Prop = PTrue
@@ -83,6 +97,7 @@ data Prop = PTrue
           | Expr :>  Expr
           | Expr :<= Expr
           | Expr :>= Expr
+            deriving Show
 
 -- | The type of integer expressions.
 -- Variable names must be non-negative.
@@ -95,6 +110,7 @@ data Expr = Expr :+ Expr          -- ^ Addition
           | If Prop Expr Expr     -- ^ A conditional expression
           | Div Expr Integer      -- ^ Division, rounds down
           | Mod Expr Integer      -- ^ Non-negative remainder
+            deriving Show
 
 prop :: Prop -> S ()
 prop PTrue       = return ()
