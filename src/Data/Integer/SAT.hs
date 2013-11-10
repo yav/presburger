@@ -191,7 +191,7 @@ data RW = RW { nameSource :: !Int
              } deriving Show
 
 initRW :: RW
-initRW = RW { nameSource = -1, todo = qEmpty, inerts = iNone }
+initRW = RW { nameSource = 0, todo = qEmpty, inerts = iNone }
 
 solveAll :: S ()
 solveAll =
@@ -587,7 +587,7 @@ get f = updS $ \rw -> (f rw, rw)
 
 newVar :: S Name
 newVar = updS $ \rw -> ( SysName (nameSource rw)
-                       , rw { nameSource = nameSource rw - 1 }
+                       , rw { nameSource = nameSource rw + 1 }
                        )
 
 -- | Try to get a new item from the work queue.
