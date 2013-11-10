@@ -18,15 +18,17 @@ module Data.Integer.SAT
   , BoundType(..)
   , getExprBound
   , getExprRange
+  , Name
+  , name
   ) where
 
-import           Data.IntMap (IntMap)
-import qualified Data.IntMap as Map
+import           Data.Map (Map)
+import qualified Data.Map as Map
 import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe,mapMaybe)
 import           Control.Applicative(Applicative(..), (<$>))
 import           Control.Monad(liftM,ap,MonadPlus(..),msum,guard)
-import           Text.PrettyPrint(Doc,(<+>), (<>), integer, hsep, text)
+import           Text.PrettyPrint(Doc,(<+>), (<>), integer, int, hsep, text)
 
 infixr 2 :||
 infixr 3 :&&
@@ -52,12 +54,12 @@ assert p (State rws) = State $ fmap snd $ m =<< rws
 
 -- | Extract a model from a consistent set of propositions.
 -- Returns 'Nothing' if the assertions have no model.
--- If a variable does not appear in the assignment, then it is 0.
-checkSat :: PropSet -> Maybe [(Name,Integer)]
+-- If a variable does not appear in the assignment, then it is 0 (?).
+checkSat :: PropSet -> Maybe [(Int,Integer)]
 checkSat (State m) = go m
   where
-  go None            = Nothing
-  go (One rw)        = Just $ filter ((>= 0) . fst) $ iModel $ inerts rw
+  go None            = mzero
+  go (One rw)        = return [ (x,v) | (UserName x, v) <- iModel (inerts rw) ]
   go (Choice m1 m2)  = mplus (go m1) (go m2)
 
 -- | Computes bounds on the expression that are compatible with the model.
@@ -71,6 +73,8 @@ getExprBound bt e (State s) =
        [] -> Nothing
        _  -> Just (maximum bs)
 
+-- | Compute the range of possible values for an expression.
+-- Returns `Nothing` if the bound is not known.
 getExprRange :: Expr -> PropSet -> Maybe [Integer]
 getExprRange e (State s) =
   do let S m          = expr e
@@ -105,7 +109,7 @@ data Expr = Expr :+ Expr          -- ^ Addition
           | Expr :- Expr          -- ^ Subtraction
           | Integer :* Expr       -- ^ Multiplication by a constant
           | Negate Expr           -- ^ Negation
-          | Var Int               -- ^ Variable, name must be >= 0
+          | Var Name              -- ^ Variable
           | K Integer             -- ^ Constant
           | If Prop Expr Expr     -- ^ A conditional expression
           | Div Expr Integer      -- ^ Division, rounds down
@@ -250,12 +254,12 @@ toCt Upper x (Bound c t) = ctLt (c |*| tVar x) t
 
 -- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
-  { bounds :: IntMap ([Bound],[Bound])
+  { bounds :: NameMap ([Bound],[Bound])
     -- ^ Known lower and upper bounds for variables.
     -- Each bound @(c,t)@ in the first list asserts that  @t < c * x@
     -- Each bound @(c,t)@ in the second list asserts that @c * x < t@
 
-  , solved :: IntMap Term
+  , solved :: NameMap Term
     -- ^ Definitions for resolved variabless.
     -- These form an idempotent substitution.
   } deriving Show
@@ -582,7 +586,9 @@ get :: (RW -> a) -> S a
 get f = updS $ \rw -> (f rw, rw)
 
 newVar :: S Name
-newVar = updS $ \rw -> (nameSource rw, rw { nameSource = nameSource rw - 1 })
+newVar = updS $ \rw -> ( SysName (nameSource rw)
+                       , rw { nameSource = nameSource rw - 1 }
+                       )
 
 -- | Try to get a new item from the work queue.
 getWork :: Field t -> S (Maybe t)
@@ -638,13 +644,23 @@ enqAndGo q t =
 --------------------------------------------------------------------------------
 
 
-type Name = Int
+data Name = UserName !Int | SysName !Int
+            deriving (Show,Eq,Ord)
+
+ppName :: Name -> Doc
+ppName (UserName x) = text "u" <> int x
+ppName (SysName x)  = text "s" <> int x
+
+name :: Int -> Name
+name = UserName
+
+type NameMap = Map Name
 
 -- | The type of terms.  The integer is the constant part of the term,
--- and the `IntMap` maps variables (represented by @Int@ to their coefficients).
+-- and the `Map` maps variables (represented by @Int@ to their coefficients).
 -- The term is a sum of its parts.
--- INVARIANT: the `IntMap` does not map anything to 0.
-data Term = T !Integer (IntMap Integer)
+-- INVARIANT: the `Map` does not map anything to 0.
+data Term = T !Integer (NameMap Integer)
               deriving (Eq,Ord)
 
 infixl 6 |+|, |-|
@@ -704,18 +720,16 @@ ppTerm (T k m) =
     x : xs      -> hsep (ppFst x   : map ppProd xs)
 
   where
-  ppFst (x,1)   = ppVar x
-  ppFst (x,-1)  = text "-" <> ppVar x
+  ppFst (x,1)   = ppName x
+  ppFst (x,-1)  = text "-" <> ppName x
   ppFst (x,n)   = ppMul n x
 
-  ppProd (x,1)  = text "+" <+> ppVar x
-  ppProd (x,-1) = text "-" <+> ppVar x
+  ppProd (x,1)  = text "+" <+> ppName x
+  ppProd (x,-1) = text "-" <+> ppName x
   ppProd (x,n) | n > 0      = text "+" <+> ppMul n x
                | otherwise  = text "-" <+> ppMul (abs n) x
 
-  ppMul n x = integer n <+> text "*" <+> ppVar x
-  ppVar n | n >= 0    = text ("a" ++ show n)
-          | otherwise = text ("b" ++ show (abs n))
+  ppMul n x = integer n <+> text "*" <+> ppName x
 
 -- | Remove a variable from the term, and return its coefficient.
 -- If the variable is not present in the term, the coefficient is 0.
