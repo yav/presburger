@@ -19,7 +19,8 @@ module Data.Integer.SAT
   , getExprBound
   , getExprRange
   , Name
-  , name
+  , toName
+  , fromName
   ) where
 
 import           Data.Map (Map)
@@ -651,8 +652,15 @@ ppName :: Name -> Doc
 ppName (UserName x) = text "u" <> int x
 ppName (SysName x)  = text "s" <> int x
 
-name :: Int -> Name
-name = UserName
+toName :: Int -> Name
+toName = UserName
+
+fromName :: Name -> Maybe Int
+fromName (UserName x) = Just x
+fromName (SysName _)  = Nothing
+
+
+
 
 type NameMap = Map Name
 
