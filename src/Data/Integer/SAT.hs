@@ -102,7 +102,7 @@ data Prop = PTrue
           | Expr :>  Expr
           | Expr :<= Expr
           | Expr :>= Expr
-            deriving Show
+            deriving (Read,Show)
 
 -- | The type of integer expressions.
 -- Variable names must be non-negative.
@@ -115,7 +115,7 @@ data Expr = Expr :+ Expr          -- ^ Addition
           | If Prop Expr Expr     -- ^ A conditional expression
           | Div Expr Integer      -- ^ Division, rounds down
           | Mod Expr Integer      -- ^ Non-negative remainder
-            deriving Show
+            deriving (Read,Show)
 
 prop :: Prop -> S ()
 prop PTrue       = return ()
@@ -646,7 +646,7 @@ enqAndGo q t =
 
 
 data Name = UserName !Int | SysName !Int
-            deriving (Show,Eq,Ord)
+            deriving (Read,Show,Eq,Ord)
 
 ppName :: Name -> Doc
 ppName (UserName x) = text "u" <> int x
