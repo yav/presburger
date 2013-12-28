@@ -21,6 +21,8 @@ module Data.Integer.SAT
   , Name
   , toName
   , fromName
+  -- * Debug
+  , dotPropSet
   ) where
 
 import           Data.Map (Map)
@@ -29,7 +31,7 @@ import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe,mapMaybe)
 import           Control.Applicative(Applicative(..), (<$>))
 import           Control.Monad(liftM,ap,MonadPlus(..),msum,guard)
-import           Text.PrettyPrint(Doc,(<+>), (<>), integer, int, hsep, text)
+import           Text.PrettyPrint
 
 infixr 2 :||
 infixr 3 :&&
@@ -43,6 +45,9 @@ infixl 7 :*
 -- | A collection of propositions.
 newtype PropSet = State (Answer RW)
                   deriving Show
+
+dotPropSet :: PropSet -> Doc
+dotPropSet (State a) = dotAnswer (ppInerts . inerts) a
 
 -- | An empty collection of propositions.
 noProps :: PropSet
@@ -138,21 +143,21 @@ prop (Not p)     = prop (neg p)
 
 prop (e1 :== e2) = do t1 <- expr e1
                       t2 <- expr e2
-                      enqAndGo qZeroTerms (t1 |-| t2)
+                      solveIs0 (t1 |-| t2)
 
 prop (e1 :/= e2)  = do t1 <- expr e1
                        t2 <- expr e2
                        let t = t1 |-| t2
-                       enqAndGo qNegTerms t `mplus` enqAndGo qNegTerms (tNeg t)
+                       solveIsNeg t `mplus` solveIsNeg (tNeg t)
 
 prop (e1 :< e2)   = do t1 <- expr e1
                        t2 <- expr e2
-                       enqAndGo qNegTerms (t1 |-| t2)
+                       solveIsNeg (t1 |-| t2)
 
 prop (e1 :<= e2)  = do t1 <- expr e1
                        t2 <- expr e2
                        let t = t1 |-| t2
-                       enqAndGo qZeroTerms t `mplus` enqAndGo qNegTerms t
+                       solveIs0 t `mplus` solveIsNeg t
 
 prop (e1 :> e2)   = prop (e2 :<  e1)
 prop (e1 :>= e2)  = prop (e2 :<= e1)
@@ -187,47 +192,11 @@ exprDivMod e k =
 --------------------------------------------------------------------------------
 
 data RW = RW { nameSource :: !Int
-             , todo       :: WorkQ
              , inerts     :: Inerts
              } deriving Show
 
 initRW :: RW
-initRW = RW { nameSource = 0, todo = qEmpty, inerts = iNone }
-
-solveAll :: S ()
-solveAll =
-  do mbEq <- getWork qZeroTerms
-     case mbEq of
-       Just p  -> solveIs0 p >> solveAll
-       Nothing ->
-         do mbLt <- getWork qNegTerms
-            case mbLt of
-              Just p  -> solveIsNeg p >> solveAll
-              Nothing -> return ()
-
-
---------------------------------------------------------------------------------
--- The work queue
-
-data WorkQ = WorkQ { zeroTerms     :: [Term]    -- ^ t == 0
-                   , negTerms      :: [Term]    -- ^ t <  0
-                   } deriving Show
-
-qEmpty :: WorkQ
-qEmpty = WorkQ { zeroTerms = [], negTerms = [] }
-
-qLet :: Name -> Term -> WorkQ -> WorkQ
-qLet x t q = WorkQ { zeroTerms      = map (tLet x t) (zeroTerms q)
-                   , negTerms       = map (tLet x t) (negTerms  q)
-                   }
-
-type Field t = (WorkQ -> [t], [t] -> WorkQ -> WorkQ)
-
-qZeroTerms :: Field Term
-qZeroTerms = (zeroTerms, \a q -> q { zeroTerms = a })
-
-qNegTerms :: Field Term
-qNegTerms = (negTerms, \a q -> q { negTerms = a })
+initRW = RW { nameSource = 0, inerts = iNone }
 
 --------------------------------------------------------------------------------
 -- Constraints and Bound on Variables
@@ -264,6 +233,19 @@ data Inerts = Inerts
     -- ^ Definitions for resolved variables.
     -- These form an idempotent substitution.
   } deriving Show
+
+ppInerts :: Inerts -> Doc
+ppInerts is = vcat $ [ ppLower x b | (x,(ls,_)) <- bnds, b <- ls ] ++
+                     [ ppUpper x b | (x,(_,us)) <- bnds, b <- us ] ++
+                     [ ppEq e      | e <- Map.toList (solved is) ]
+  where
+  bnds = Map.toList (bounds is)
+
+  ppT c x                = ppTerm (c |*| tVar x)
+  ppLower x (Bound c t)  = ppTerm t <+> text "<" <+> ppT c x
+  ppUpper x (Bound c t)  = ppT c x  <+> text "<" <+> ppTerm t
+  ppEq (x,t)             = ppName x <+> text "=" <+> ppTerm t
+
 
 
 -- | An empty inert set.
@@ -401,10 +383,13 @@ iModel i = goBounds [] (bounds i)
 --------------------------------------------------------------------------------
 -- Solving constraints
 
+solveIs0 :: Term -> S ()
+solveIs0 t = solveIs0' =<< apSubst t
+
 -- | Solve a constraint if the form @t = 0@.
 -- Assumes substitution has already been applied.
-solveIs0 :: Term -> S ()
-solveIs0 t
+solveIs0' :: Term -> S ()
+solveIs0' t
 
   -- A == 0
   | Just a <- isConst t = guard (a == 0)
@@ -415,12 +400,13 @@ solveIs0 t
       (q,0) -> addDef x (tConst q)
       _     -> mzero
 
-  -- x + S = 0
+  --  x + S = 0
+  -- -x + S = 0
   | Just (xc,x,s) <- tGetSimpleCoeff t =
     addDef x (if xc > 0 then tNeg s else s)
 
   -- A * S = 0
-  | Just (_, s) <- tFactor t  = addWork qZeroTerms s
+  | Just (_, s) <- tFactor t  = solveIs0 s
 
   -- See Section 3.1 of paper for details.
   -- We obtain an equivalent formulation but with smaller coefficients.
@@ -433,7 +419,7 @@ solveIs0 t
          addDef xk soln
 
          let upd i = div (2*i + m) (2*m) + modulus i m
-         addWork qZeroTerms (negate (abs ak) |*| tVar v |+| tMapCoeff upd s)
+         solveIs0 (negate (abs ak) |*| tVar v |+| tMapCoeff upd s)
 
   | otherwise = error "solveIs0: unreachable"
 
@@ -441,16 +427,20 @@ modulus :: Integer -> Integer -> Integer
 modulus a m = a - m * div (2 * a + m) (2 * m)
 
 
+solveIsNeg :: Term -> S ()
+solveIsNeg t = solveIsNeg' =<< apSubst t
+
+
 -- | Solve a constraint of the form @t < 0@.
 -- Assumes that substitution has been applied
-solveIsNeg :: Term -> S ()
-solveIsNeg t
+solveIsNeg' :: Term -> S ()
+solveIsNeg' t
 
   -- A < 0
   | Just a <- isConst t = guard (a < 0)
 
   -- A * S < 0
-  |Just (_,s) <- tFactor t = addWork qNegTerms s
+  | Just (_,s) <- tFactor t = solveIsNeg s
 
   -- See Section 5.1 of the paper
   | Just (xc,x,s) <- tLeastVar t =
@@ -477,8 +467,8 @@ solveIsNeg t
                  dark = ctLt (tConst (a * b)) (b |*| alpha |-| a |*| beta)
                  gray = [ ctEq (b |*| tVar x) (tConst i |+| beta)
                                                       | i <- [ 1 .. b - 1 ] ]
-             addWork qNegTerms real
-             msum (addWork qNegTerms dark : map (addWork qZeroTerms) gray)
+             solveIsNeg real
+             msum (solveIsNeg dark : map solveIs0 gray)
              ) ctrs
 
   | otherwise = error "solveIsNeg: unreachable"
@@ -522,6 +512,28 @@ which is covered by the dark shadow.
 data Answer a = None | One a | Choice (Answer a) (Answer a)
                 deriving Show
 
+
+dotAnswer :: (a -> Doc) -> Answer a -> Doc
+dotAnswer pp g0 = vcat [text "digraph {", nest 2 (fst $ go 0 g0), text "}"]
+  where
+  node x d            = integer x <+> brackets (text "label=" <> text (show d))
+                                                              <> semi
+  edge x y            = integer x <+> text "->" <+> integer y
+
+  go x None           = let x' = x + 1
+                        in seq x' ( node x "", x' )
+  go x (One a)        = let x' = x + 1
+                        in seq x' ( node x (show (pp a)), x' )
+  go x (Choice c1 c2) = let x'       = x + 1
+                            (ls1,x1) = go x' c1
+                            (ls2,x2) = go x1    c2
+                        in seq x'
+                           ( vcat [ node x "|"
+                                  , edge x x'
+                                  , edge x x1
+                                  , ls1
+                                  , ls2
+                                  ], x2 )
 toList :: Answer a -> [a]
 toList a = go a []
   where
@@ -586,20 +598,6 @@ newVar = updS $ \rw -> ( SysName (nameSource rw)
                        , rw { nameSource = nameSource rw + 1 }
                        )
 
--- | Try to get a new item from the work queue.
-getWork :: Field t -> S (Maybe t)
-getWork (getF,setF) = updS $ \rw ->
-  let work = todo rw
-  in case getF work of
-       []     -> (Nothing, rw)
-       t : ts -> (Just t,  rw { todo = setF ts work })
-
--- | Add a new item to the work queue.
-addWork :: Field t -> t -> S ()
-addWork (getF,setF) t = updS_ $ \rw ->
-  let work = todo rw
-  in rw { todo = setF (t : getF work) work }
-
 -- | Get lower ('fst'), or upper ('snd') bounds for a variable.
 getBounds :: BoundType -> Name -> S [Bound]
 getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
@@ -620,19 +618,15 @@ addBound bt x b = updS_ $ \rw ->
 -- | Add a new definition.
 -- Assumes substitution has already been applied
 addDef :: Name -> Term -> S ()
-addDef x t = updS_ $ \rw ->
-  let (newWork,newInerts) = iSolved x t (inerts rw)
-  in rw { inerts = newInerts
-        , todo   = qLet x t $
-                     let work = todo rw
-                     in work { negTerms = newWork ++ negTerms work }
-        }
+addDef x t =
+  do newWork <- updS $ \rw -> let (newWork,newInerts) = iSolved x t (inerts rw)
+                              in (newWork, rw { inerts = newInerts })
+     mapM_ solveIsNeg newWork
 
-enqAndGo :: Field Term -> Term -> S ()
-enqAndGo q t =
+apSubst :: Term -> S Term
+apSubst t =
   do i <- get inerts
-     addWork q $ iApSubst i t
-     solveAll
+     return (iApSubst i t)
 
 
 
