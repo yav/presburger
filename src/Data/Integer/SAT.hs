@@ -324,22 +324,17 @@ iSolved x t i =
 -- Given a list of lower (resp. upper) bounds, compute the least (resp. largest)
 -- value that satisfies them all.
 iPickBounded :: BoundType -> [Bound] -> Maybe Integer
-iPickBounded bt bs = go bs Nothing
+iPickBounded _ [] = Nothing
+iPickBounded bt bs =
+  do xs <- mapM (normBound bt) bs
+     return $ case bt of
+                Lower -> maximum xs + 1
+                Upper -> minimum xs - 1
   where
-  go [] mb = mb
-  go (Bound c t : more) mb =
-    do k <- isConst t
-       let t1 = maybe k (combine k) mb
-       go more $ Just $ compute t1 c
-
-  combine = case bt of
-              Lower -> max
-              Upper -> min
-
-  compute v c = case bt of
-                  Lower -> div v c + 1
-                  Upper -> let (q,r) = divMod v c
-                           in if r == 0 then q - 1 else q
+  normBound Lower (Bound c t) = do k <- isConst t
+                                   return (div (k + c - 1) c)
+  normBound Upper (Bound c t) = do k <- isConst t
+                                   return (div k c)
 
 
 -- | The largest (resp. least) upper (resp. lower) bound on a term
