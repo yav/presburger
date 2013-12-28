@@ -261,7 +261,7 @@ data Inerts = Inerts
     -- Each bound @(c,t)@ in the second list asserts that @c * x < t@
 
   , solved :: NameMap Term
-    -- ^ Definitions for resolved variabless.
+    -- ^ Definitions for resolved variables.
     -- These form an idempotent substitution.
   } deriving Show
 
@@ -283,7 +283,7 @@ iApSubst i t = foldr apS t $ Map.toList $ solved i
 --
 --    * Assumes substitution has already been applied.
 --
---    * The kciked-out constraints are NOT rewritten, this happens
+--    * The kicked-out constraints are NOT rewritten, this happens
 --      when they get inserted in the work queue.
 
 iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
