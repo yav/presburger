@@ -1,4 +1,4 @@
-{-# LANGUAGE Safe, PatternGuards #-}
+{-# LANGUAGE Trustworthy, PatternGuards, BangPatterns #-}
 {-|
 This module implements a decision procedure for quantifier-free linear
 arithmetic.  The algorithm is based on the following paper:
@@ -21,16 +21,29 @@ module Data.Integer.SAT
   , Name
   , toName
   , fromName
+  -- * Iterators
+  , allSolutions
+  , slnCurrent
+  , slnNextVal
+  , slnNextVar
+  , slnEnumerate
+
+
   -- * Debug
   , dotPropSet
+  , sizePropSet
+  , allInerts
+  , ppInerts
   ) where
+
+import Debug.Trace
 
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe,mapMaybe)
 import           Control.Applicative(Applicative(..), (<$>))
-import           Control.Monad(liftM,ap,MonadPlus(..),msum,guard)
+import           Control.Monad(liftM,ap,MonadPlus(..),guard)
 import           Text.PrettyPrint
 
 infixr 2 :||
@@ -48,6 +61,9 @@ newtype PropSet = State (Answer RW)
 
 dotPropSet :: PropSet -> Doc
 dotPropSet (State a) = dotAnswer (ppInerts . inerts) a
+
+sizePropSet :: PropSet -> (Integer,Integer,Integer)
+sizePropSet (State a) = answerSize a
 
 -- | An empty collection of propositions.
 noProps :: PropSet
@@ -67,6 +83,13 @@ checkSat (State m) = go m
   go None            = mzero
   go (One rw)        = return [ (x,v) | (UserName x, v) <- iModel (inerts rw) ]
   go (Choice m1 m2)  = mplus (go m1) (go m2)
+
+allInerts :: PropSet -> [Inerts]
+allInerts (State m) = map inerts (toList m)
+
+allSolutions :: PropSet -> [Solutions]
+allSolutions = map startIter . allInerts
+
 
 -- | Computes bounds on the expression that are compatible with the model.
 -- Returns `Nothing` if the bound is not known.
@@ -148,7 +171,7 @@ prop (e1 :== e2) = do t1 <- expr e1
 prop (e1 :/= e2)  = do t1 <- expr e1
                        t2 <- expr e2
                        let t = t1 |-| t2
-                       solveIsNeg t `mplus` solveIsNeg (tNeg t)
+                       solveIsNeg t `orElse` solveIsNeg (tNeg t)
 
 prop (e1 :< e2)   = do t1 <- expr e1
                        t2 <- expr e2
@@ -157,7 +180,7 @@ prop (e1 :< e2)   = do t1 <- expr e1
 prop (e1 :<= e2)  = do t1 <- expr e1
                        t2 <- expr e2
                        let t = t1 |-| t2
-                       solveIs0 t `mplus` solveIsNeg t
+                       solveIs0 t `orElse` solveIsNeg t
 
 prop (e1 :> e2)   = prop (e2 :<  e1)
 prop (e1 :>= e2)  = prop (e2 :<= e1)
@@ -303,6 +326,114 @@ iSolved x t i =
   stay (Bound _ bnd) = not (tHasVar x bnd)
 
 
+-- | Given some lower and upper bounds, find the interval the satisfies them.
+-- Note the upper and lower bounds are strict (i.e., < and >)
+boundInterval :: [Bound] -> [Bound] -> Maybe (Maybe Integer, Maybe Integer)
+boundInterval lbs ubs =
+  do ls <- mapM (normBound Lower) lbs
+     us <- mapM (normBound Upper) ubs
+     let lb = case ls of
+                [] -> Nothing
+                _  -> Just (maximum ls + 1)
+         ub = case us of
+                [] -> Nothing
+                _  -> Just (minimum us - 1)
+     case (lb,ub) of
+       (Just l, Just u) -> guard (l <= u)
+       _                -> return ()
+     return (lb,ub)
+  where
+  normBound Lower (Bound c t) = do k <- isConst t
+                                   return (div (k + c - 1) c)
+  normBound Upper (Bound c t) = do k <- isConst t
+                                   return (div k c)
+
+data Solutions = Done
+               | TopVar Name Integer (Maybe Integer) (Maybe Integer) Inerts
+               | FixedVar Name Integer Solutions
+                  deriving Show
+
+slnCurrent :: Solutions -> [(Int,Integer)]
+slnCurrent s = [ (x,v) | (UserName x, v) <- go s ]
+  where
+  go Done                = []
+  go (TopVar x v _ _ is) = (x, v) : iModel (iLet x v is)
+  go (FixedVar x v i)    = (x, v) : go i
+
+-- | Replace occurances of a variable with an integer.
+-- WARNING: The integer should be a valid value for the variable.
+iLet :: Name -> Integer -> Inerts -> Inerts
+iLet x v is = Inerts { bounds = fmap updBs (bounds is)
+                     , solved = fmap (tLetNum x v) (solved is) }
+  where
+  updB (Bound c t) = Bound c (tLetNum x v t)
+  updBs (ls,us)    = (map updB ls, map updB us)
+
+
+startIter :: Inerts -> Solutions
+startIter is =
+  case Map.maxViewWithKey (bounds is) of
+    Nothing ->
+      case Map.maxViewWithKey (solved is) of
+        Nothing -> Done
+        Just ((x,t), mp1) ->
+          case [ y | y <- tVarList t ] of
+            y : _ -> TopVar y 0 Nothing Nothing is
+            [] -> let v = tConstPart t
+                  in TopVar x v (Just v) (Just v) $ is { solved = mp1 }
+    Just ((x,(lbs,ubs)), mp1) ->
+      case [ y | Bound _ t <- lbs ++ ubs, y <- tVarList t ] of
+        y : _ -> TopVar y 0 Nothing Nothing is
+        [] -> case boundInterval lbs ubs of
+                Nothing -> error "bug: cannot compute interval?"
+                Just (lb,ub) ->
+                  let v = fromMaybe 0 (mplus lb ub)
+                  in TopVar x v lb ub $ is { bounds = mp1 }
+
+slnEnumerate :: Solutions -> [ Solutions ]
+slnEnumerate s0 = go s0 []
+  where
+  go s k  = case slnNextVar s of
+              Nothing -> hor s k
+              Just s1 -> go s1 $ case slnNextVal s of
+                                   Nothing -> k
+                                   Just s2 -> go s2 k
+
+  hor s k = s
+          : case slnNextVal s of
+              Nothing -> k
+              Just s1 -> hor s1 k
+
+slnNextVal :: Solutions -> Maybe Solutions
+slnNextVal Done = Nothing
+slnNextVal (FixedVar x v i) = FixedVar x v `fmap` slnNextVal i
+slnNextVal it@(TopVar _ _ lb _ _) =
+  case lb of
+    Just _  -> slnNextValWith (+1) it
+    Nothing -> slnNextValWith (subtract 1) it
+
+
+slnNextValWith :: (Integer -> Integer) -> Solutions -> Maybe Solutions
+slnNextValWith _ Done = Nothing
+slnNextValWith f (FixedVar x v i) = FixedVar x v `fmap` slnNextValWith f i
+slnNextValWith f (TopVar x v lb ub is) =
+  do let v1 = f v
+     case lb of
+       Just l  -> guard (l <= v1)
+       Nothing -> return ()
+     case ub of
+       Just u  -> guard (v1 <= u)
+       Nothing -> return ()
+     return $ TopVar x v1 lb ub is
+
+slnNextVar :: Solutions -> Maybe Solutions
+slnNextVar Done = Nothing
+slnNextVar (TopVar x v _ _ is) = Just $ FixedVar x v $ startIter $ iLet x v is
+slnNextVar (FixedVar x v i)    = FixedVar x v `fmap` slnNextVar i
+
+
+
+
 -- Given a list of lower (resp. upper) bounds, compute the least (resp. largest)
 -- value that satisfies them all.
 iPickBounded :: BoundType -> [Bound] -> Maybe Integer
@@ -356,6 +487,7 @@ iVarBound bt x is =
   scaleBound c b = case bt of
                      Upper -> div (b-1) c
                      Lower -> div b c + 1
+
 
 
 
@@ -468,11 +600,13 @@ solveIsNeg' t
                  gray = [ ctEq (b |*| tVar x) (tConst i |+| beta)
                                                       | i <- [ 1 .. b - 1 ] ]
              solveIsNeg real
-             msum (solveIsNeg dark : map solveIs0 gray)
+             foldl orElse (solveIsNeg dark) (map solveIs0 gray)
              ) ctrs
 
   | otherwise = error "solveIsNeg: unreachable"
 
+orElse :: S () -> S () -> S ()
+orElse x y = mplus x y
 
 {- Note [Shadows]
 
@@ -511,6 +645,18 @@ which is covered by the dark shadow.
 
 data Answer a = None | One a | Choice (Answer a) (Answer a)
                 deriving Show
+
+
+answerSize :: Answer a -> (Integer,Integer,Integer)
+answerSize = go 0 0 0
+  where
+  go !n !o !c ans =
+    case ans of
+      None  -> (n+1, o, c)
+      One _ -> (n, o + 1, c)
+      Choice x y ->
+        case go n o (c+1) x of
+          (n',o',c') -> go n' o' c' y
 
 
 dotAnswer :: (a -> Doc) -> Answer a -> Doc
