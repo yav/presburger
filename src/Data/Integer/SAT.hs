@@ -179,8 +179,8 @@ prop (e1 :< e2)   = do t1 <- expr e1
 
 prop (e1 :<= e2)  = do t1 <- expr e1
                        t2 <- expr e2
-                       let t = t1 |-| t2
-                       solveIs0 t `orElse` solveIsNeg t
+                       let t = t1 |-| t2 |-| tConst 1
+                       solveIsNeg t
 
 prop (e1 :> e2)   = prop (e2 :<  e1)
 prop (e1 :>= e2)  = prop (e2 :<= e1)
