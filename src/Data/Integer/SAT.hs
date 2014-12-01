@@ -441,13 +441,23 @@ iPickBounded _ [] = Nothing
 iPickBounded bt bs =
   do xs <- mapM (normBound bt) bs
      return $ case bt of
-                Lower -> maximum xs + 1
-                Upper -> minimum xs - 1
+                Lower -> maximum xs
+                Upper -> minimum xs
   where
+  -- t < c*x
+  -- <=> t+1 <= c*x
+  -- <=> (t+1)/c <= x
+  -- <=> ceil((t+1)/c) <= x
+  -- <=> t `div` c + 1 <= x
   normBound Lower (Bound c t) = do k <- isConst t
-                                   return (div (k + c - 1) c)
+                                   return (k `div` c + 1)
+  -- c*x < t
+  -- <=> c*x <= t-1
+  -- <=> x   <= (t-1)/c
+  -- <=> x   <= floor((t-1)/c)
+  -- <=> x   <= (t-1) `div` c
   normBound Upper (Bound c t) = do k <- isConst t
-                                   return (div k c)
+                                   return (div (k-1) c)
 
 
 -- | The largest (resp. least) upper (resp. lower) bound on a term
