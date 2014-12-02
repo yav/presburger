@@ -34,6 +34,11 @@ module Data.Integer.SAT
   , sizePropSet
   , allInerts
   , ppInerts
+
+  -- * For QuickCheck
+  , iPickBounded
+  , Bound(..)
+  , tConst
   ) where
 
 import Debug.Trace

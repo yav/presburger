@@ -1,5 +1,5 @@
 Name:           presburger
-Version:        1.1
+Version:        1.2
 License:        BSD3
 License-file:   LICENSE
 Author:         Iavor S. Diatchki
@@ -10,7 +10,7 @@ Synopsis:       A decision procedure for quantifier-free linear arithmetic.
 Description:    The decision procedure is based on the algorithm used in
                 CVC4, which is itself based on the Omega test.
 Build-type:     Simple
-Cabal-version:  >= 1.6
+Cabal-version:  >= 1.8
 
 library
   Build-Depends:  base < 10, containers, pretty
@@ -23,4 +23,10 @@ library
 source-repository head
   type: git
   location: git://github.com/yav/presburger.git
+
+Test-Suite pressburger-qc-tests
+  type: exitcode-stdio-1.0
+  hs-source-dirs: tests
+  main-is: qc.hs
+  build-depends: base, presburger == 1.2, QuickCheck
 
