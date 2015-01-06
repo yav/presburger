@@ -47,7 +47,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe,mapMaybe)
-import           Control.Applicative(Applicative(..), (<$>))
+import           Control.Applicative(Applicative(..), Alternative(..), (<$>))
 import           Control.Monad(liftM,ap,MonadPlus(..),guard)
 import           Text.PrettyPrint
 
@@ -710,6 +710,10 @@ instance Monad Answer where
   One a >>= k        = k a
   Choice m1 m2 >>= k = mplus (m1 >>= k) (m2 >>= k)
 
+instance Alternative Answer where
+  empty = mzero
+  (<|>) = mplus
+
 instance MonadPlus Answer where
   mzero                = None
   mplus None x         = x
@@ -733,6 +737,10 @@ instance Monad S where
   S m >>= k     = S $ \s -> do (a,s1) <- m s
                                let S m1 = k a
                                m1 s1
+
+instance Alternative S where
+  empty = mzero
+  (<|>) = mplus
 
 instance MonadPlus S where
   mzero               = S $ \_ -> mzero
