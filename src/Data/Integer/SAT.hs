@@ -10,29 +10,40 @@ arithmetic.  The algorithm is based on the following paper:
   Sergey Berezin, Vijay Ganesh, and David L. Dill
 -}
 module Data.Integer.SAT
-    -- PropSet
-  -- , noProps
-  -- , checkSat
-  -- , assert
-  ( BoundType(..)
+  ( -- * Solver states
+    PropSet
+  , emptyPropSet
+  , Prop(..)
+  , ppProp
+  , assertProp
+  , getModel
+
+  -- * Terms
+  , Term
+  , tVar
+  , tConst
+  , (|+|)
+  , (|-|)
+  , (|*|)
+  , tNeg
+  , tLet
+  , tLetNum
+  , tLetNums
+  , ppTerm
+  , ppPropSet
+
+  -- * Names
   , Name
   , toName
   , fromName
-
-  -- * Debug
-  , ppInerts
-
-  -- * For QuickCheck
-  , Bound(..)
-  , tConst
+  , ppName
   ) where
 
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe)
-import           Control.Applicative(Alternative(..))
-import           Control.Monad(liftM,ap,MonadPlus(..),guard,forM_)
+import           Control.Monad(liftM,ap,forM_,mplus)
 import           Text.PrettyPrint
 
 #if __GLASGOW_HASKELL__ < 710
@@ -40,8 +51,55 @@ import           Control.Applicative(Applicative(..), (<$>))
 #endif
 
 
+--------------------------------------------------------------------------------
+
+newtype PropSet = PropSet RW
+
+data Prop       = Term :=  Term
+                | Term :>= Term
+                | Term :>  Term
+
+ppProp :: Prop -> Doc
+ppProp prop =
+  case prop of
+    t1 := t2  -> ppTerm t1 <+> text "="  <+> ppTerm t2
+    t1 :> t2  -> ppTerm t1 <+> text ">"  <+> ppTerm t2
+    t1 :>= t2 -> ppTerm t1 <+> text ">=" <+> ppTerm t2
+
+ppPropSet :: PropSet -> Doc
+ppPropSet (PropSet rw) = ppInerts (inerts rw)
+
+-- | An empty set of assertions.
+emptyPropSet :: PropSet
+emptyPropSet = PropSet initRW
+
+-- | Assert a proposition.  If we detect a contradiction, then
+-- we report the reason on the left.  Otherwise, we get a new proposet,
+-- and a disjunction of new proposition.  The propoerty is satisfiable
+-- as long as one of these sub-goals is compatible with the new state.
+assertProp :: Prop -> PropSet -> Either Error (PropSet, [Prop])
+assertProp prop (PropSet rw) =
+  case prop of
+
+    t1 := t2  -> go (solveIs0 (ctEq t1 t2))
+    t1 :> t2  -> go (solveIsNeg (ctLt t1 t2))
+    t1 :>= t2 -> go (solveIsNeg (ctLt t1 (tConst 1 |+| t2)))
+
+  where
+  go m =
+    case runS m rw of
+      Error e -> Left e
+      Ok _ rw1 ->
+        let dark = [ darkShadow c := tConst 0 | c <- delayed rw1 ]
+            gray = [ tConst 0 :> t | c <- delayed rw1, t <- grayShadow c ]
+            subs = dark ++ gray
+        in case subs of
+             [x] -> assertProp x (PropSet rw1 { delayed = [] })
+             _   -> Right (PropSet rw1 { delayed = [] }, dark ++ gray)
 
 
+getModel :: PropSet -> [(Name,Integer)]
+getModel (PropSet rw) = iModel (inerts rw)
 
 --------------------------------------------------------------------------------
 -- Constraints and Bound on Variables
@@ -70,12 +128,16 @@ toCt Upper x (Bound c t) = ctLt (c |*| tVar x) t
 
 -- | The inert contains the solver state on one possible path.
 data Inerts = Inerts
-  { bounds :: NameMap ([Bound],[Bound])
-    -- ^ Known lower and upper bounds for variables.
-    -- Each bound @(c,t)@ in the first list asserts that  @t < c * x@
-    -- Each bound @(c,t)@ in the second list asserts that @c * x < t@
+  { bounds :: Map Name ([Bound],[Bound])
+    {- ^ Known lower and upper bounds for variables.
+          * Each bound @(c,t)@ in the first list asserts that  @t < c * x@
+          * Each bound @(c,t)@ in the second list asserts that @c * x < t@
+          * Invariant: the bounds on variable `x` depend only on variables
+                       larger than `x`.  Thus, the largest variable has
+                       only an integer bound, the next smaller one may depend
+                       on the largest one, etc. -}
 
-  , solved :: NameMap Term
+  , solved :: Map Name Term
     -- ^ Definitions for resolved variables.
     -- These form an idempotent substitution.
   } deriving Show
@@ -109,7 +171,7 @@ iApSubst i t = foldr apS t $ Map.toList $ solved i
 -- the variable are "kicked-out" so that they can be reinserted in the
 -- context of the new knowledge.
 --
---    * Assumes substitution has already been applied.
+--    * Assumes the substitution has already been applied.
 --
 --    * The kicked-out constraints are NOT rewritten, this happens
 --      when they get inserted in the work queue.
@@ -149,6 +211,51 @@ iSolved x t i =
   stay (Bound _ bnd) = not (tHasVar x bnd)
 
 
+iModel :: Inerts -> [(Name,Integer)]
+iModel i = goBounds [] (bounds i)
+  where
+  goBounds su mp =
+    case Map.maxViewWithKey mp of
+      Nothing -> goEqs su $ Map.toList $ solved i
+      Just ((x,(lbs0,ubs0)), mp1) ->
+        let lbs = [ Bound c (tLetNums su t) | Bound c t <- lbs0 ]
+            ubs = [ Bound c (tLetNums su t) | Bound c t <- ubs0 ]
+            sln = fromMaybe 0
+                $ mplus (iPickBounded Lower lbs) (iPickBounded Upper ubs)
+        in goBounds ((x,sln) : su) mp1
+
+  goEqs su [] = su
+  goEqs su ((x,t) : more) =
+    let t1  = tLetNums su t
+        vs  = tVarList t1
+        su1 = [ (v,0) | v <- vs ] ++ (x,tConstPart t1) : su
+    in goEqs su1 more
+
+
+-- Given a list of lower (resp. upper) bounds, compute the least (resp. largest)
+-- value that satisfies them all.
+iPickBounded :: BoundType -> [Bound] -> Maybe Integer
+iPickBounded _ [] = Nothing
+iPickBounded bt bs =
+  do xs <- mapM (normBound bt) bs
+     return $ case bt of
+                Lower -> maximum xs
+                Upper -> minimum xs
+  where
+  -- t < c*x
+  -- <=> t+1 <= c*x
+  -- <=> (t+1)/c <= x
+  -- <=> ceil((t+1)/c) <= x
+  -- <=> t `div` c + 1 <= x
+  normBound Lower (Bound c t) = do k <- isConst t
+                                   return (k `div` c + 1)
+  -- c*x < t
+  -- <=> c*x <= t-1
+  -- <=> x   <= (t-1)/c
+  -- <=> x   <= floor((t-1)/c)
+  -- <=> x   <= (t-1) `div` c
+  normBound Upper (Bound c t) = do k <- isConst t
+                                   return (div (k-1) c)
 
 
 
@@ -215,9 +322,12 @@ solveIsNeg' t
   | Just a <- isConst t = guarded "Not negative" (a < 0)
 
   -- A * S < 0
-  | Just (_,s) <- tFactor t = solveIsNeg s
+  -- This does not mess with new variables, so we don't need
+  -- to re-apply the substitution.
+  -- Note: the constant is positive, so `s` must be negative.
+  | Just (_,s) <- tFactor t = solveIsNeg' s
 
-  -- See Section 5.1 of the paper
+  -- See Section 5.1 of the paper.
   | Just (xc,x,s) <- tLeastVar t =
 
     do ctrs <- if xc < 0
@@ -289,32 +399,11 @@ data ShadowCt   = ShadowCt { darkShadow :: Term       -- ^ this is negative
                            } deriving Show
 
 
--- | A naive SAT solver.
--- We should be able to do a lot better, especially if we use info from proofs.
-solveShadowCt :: ShadowCt -> S Bool
-solveShadowCt s =
-  search (solveIsNeg (darkShadow s) : map solveIs0 (grayShadow s))
-  where
-  search []      = return False
-  search (x : k) = do mb <- subGoals x
-                      case mb of
-                        Nothing -> search k
-                        Just xs ->
-                          do ok <- solveShadowCts xs
-                             if ok then return True else search k
-
-solveShadowCts :: [ShadowCt] -> S Bool
-solveShadowCts []       = return True
-solveShadowCts (c : cs) =
-  do yes <- solveShadowCt c
-     if yes then solveShadowCts cs else return False
-
-
 
 --------------------------------------------------------------------------------
--- Monads
+-- Monad
 
-newtype S a     = S (RW -> Answer a)
+newtype S a     = S { runS :: RW -> Answer a }
 
 data RW         = RW { nameSource :: !Int
                      , inerts     :: Inerts
@@ -328,6 +417,7 @@ type Error      = String
 
 instance Monad S where
   return a      = S $ \s -> Ok a s
+  fail s        = error s
   S m >>= k     = S $ \s -> case m s of
                               Ok a s1 -> let S m1 = k a
                                          in m1 s1
@@ -354,7 +444,7 @@ updS f = S $ \s -> case f s of
                      (a,s1) -> Ok a s1
 
 updS_ :: (RW -> RW) -> S ()
-updS_ f = updS $ \rw -> ((), rw)
+updS_ f = updS $ \rw -> ((), f rw)
 
 get :: (RW -> a) -> S a
 get f = updS $ \rw -> (f rw, rw)
@@ -406,12 +496,6 @@ delay :: ShadowCt -> S ()
 delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
 
 
--- | Run a computation and return shadow constraints, if succesful.
-subGoals :: S () -> S (Maybe [ShadowCt])
-subGoals (S m) =
-  updS $ \rw -> case m rw of
-                  Error _e  -> (Nothing, rw)
-                  Ok _ rw   -> (Just (delayed rw), rw { delayed = [] })
 
 
 --------------------------------------------------------------------------------
@@ -434,23 +518,21 @@ fromName (SysName _)  = Nothing
 
 
 
-type NameMap = Map Name
-
 -- | The type of terms.  The integer is the constant part of the term,
 -- and the `Map` maps variables (represented by @Int@ to their coefficients).
 -- The term is a sum of its parts.
 -- INVARIANT: the `Map` does not map anything to 0.
-data Term = T !Integer (NameMap Integer)
+data Term = T !Integer (Map Name Integer)
               deriving (Eq,Ord)
 
 infixl 6 |+|, |-|
 infixr 7 |*|
 
--- | A constant term.
+-- | A numeric literal.
 tConst :: Integer -> Term
 tConst k = T k Map.empty
 
--- | Construct a term with a single variable.
+-- | A constant.
 tVar :: Name -> Term
 tVar x = T 0 (Map.singleton x 1)
 
@@ -480,7 +562,7 @@ tLet :: Name -> Term -> Term -> Term
 tLet x t1 t2 = let (a,t) = tSplitVar x t2
                in a |*| t1 |+| t
 
--- | Replace a variable with a constant.
+-- | Replace a variable with a numeric literal.
 tLetNum :: Name -> Integer -> Term -> Term
 tLetNum x k t = let (c,T n m) = tSplitVar x t
                 in T (c * k + n) m
@@ -516,7 +598,7 @@ ppTerm (T k m) =
   ppMul n x = integer n <+> text "*" <+> ppName x
 
 -- | Remove a variable from the term and return its coefficient.
--- If the variable is not present in the term, the coefficient is 0.
+-- If the variable is not present in the term, then the coefficient is 0.
 tSplitVar :: Name -> Term -> (Integer, Term)
 tSplitVar x t@(T n m) =
   case Map.updateLookupWithKey (\_ _ -> Nothing) x m of
@@ -527,7 +609,7 @@ tSplitVar x t@(T n m) =
 tHasVar :: Name -> Term -> Bool
 tHasVar x (T _ m) = Map.member x m
 
--- | Is this terms just an integer.
+-- | Is this terms just an integer?
 isConst :: Term -> Maybe Integer
 isConst (T n m)
   | Map.null m  = Just n
@@ -552,12 +634,12 @@ tGetSimpleCoeff (T a m) =
      ((x,xc), m3) <- Map.minViewWithKey m1
      return (xc, x, T a (Map.union m3 m2))
 
--- | The variables mention in this term.
+-- | The variables mentioned in this term.
 tVarList :: Term -> [Name]
 tVarList (T _ m) = Map.keys m
 
--- | Try to factor-out a common consant (> 1) from a term.
--- For example, @2 + 4x@ becomes @2 * (1 + 2x)@.
+-- | Try to factor-out a common constant, (> 1), from a term.
+-- For example, @2 + 4*x@ becomes @2 * (1 + 2x)@.
 tFactor :: Term -> Maybe (Integer, Term)
 tFactor (T c m) =
   do d <- common (c : Map.elems m)
@@ -587,7 +669,7 @@ tLeastVar (T c m) =
   do ((x,xc), m1) <- Map.minViewWithKey m
      return (xc, x, T c m1)
 
--- | Apply a function to all coefficients, including the constnat
+-- | Apply a function to all coefficients, including the constant.
 tMapCoeff :: (Integer -> Integer) -> Term -> Term
 tMapCoeff f (T c m) = T (f c) (fmap f m)
 
