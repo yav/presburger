@@ -165,14 +165,25 @@ iApSubst :: Inerts -> Term -> Term
 iApSubst i t = foldr apS t $ Map.toList $ solved i
   where apS (x,t1) t2 = tLet x t1 t2
 
--- | Add a definition.  Upper and lower bound constraints that mention
--- the variable are "kicked-out" so that they can be reinserted in the
--- context of the new knowledge.
---
---    * Assumes the substitution has already been applied.
---
---    * The kicked-out constraints are NOT rewritten, this happens
---      when they get inserted in the work queue.
+{- | Add a definition.  Upper and lower bound constraints that mention
+the variable are "kicked-out" so that they can be reinserted in the
+context of the new knowledge.
+
+  * Assumes the substitution has already been applied.
+
+  * The kicked-out constraints are NOT rewritten, this happens
+    when they get inserted in the work queue.
+
+The kick-out bit seems necessary to preserve the invariants on the inerts.
+For example, consider a constraint like this:
+
+  p < 5 * a
+
+Now, suppose that we've discovered that `a = z`.  We can't just substitute,
+because the result, `p < 5 * z` would violate the invariant that `p` can
+only depend on smaller variables.  Instead, we'd have to rewrite the constraints
+so that `z` is constrained by `p`.
+-}
 
 iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
 iSolved x t i =
@@ -184,10 +195,11 @@ iSolved x t i =
   where
   (kickedOut, otherBounds) =
 
-        -- First, we eliminate all entries for `x`
+        -- First, we eliminate the bounds on `x` (i.e., `x` is in the key)
     let (mb, mp1) = Map.updateLookupWithKey (\_ _ -> Nothing) x (bounds i)
 
-        -- Next, we elminate all constraints that mentiond `x` in bounds
+        -- Next, we elminate all constraints that mentiond `x` in the bounds
+        -- (i.e., `x` is in the values)
         mp2 = Map.mapWithKey extractBounds mp1
 
     in ( [ ct | (lbs,ubs) <- maybeToList mb
@@ -198,6 +210,9 @@ iSolved x t i =
        , fmap fst mp2
        )
 
+  -- Splits up the values of a map into two parts:
+  --    * the first is the set of constraints that remains
+  --    * the second is the set of constraints that are kicked-out.
   extractBounds y (lbs,ubs) =
     let (lbsStay, lbsKick) = partition stay lbs
         (ubsStay, ubsKick) = partition stay ubs
