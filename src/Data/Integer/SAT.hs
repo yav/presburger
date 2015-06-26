@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE Safe, PatternGuards, BangPatterns #-}
+{-# LANGUAGE Trustworthy, PatternGuards, BangPatterns #-}
 {-|
 This module implements a decision procedure for quantifier-free linear
 arithmetic.  The algorithm is based on the following paper:
@@ -39,16 +39,34 @@ module Data.Integer.SAT
   , ppName
   ) where
 
+import Debug.Trace
+
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe)
-import           Control.Monad(liftM,ap,forM_,mplus)
+import           Control.Monad(liftM,ap,forM_,mplus,guard)
 import           Text.PrettyPrint
+import           Data.IntSet ( IntSet )
+import qualified Data.IntSet as IntSet
 
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative(Applicative(..), (<$>))
 #endif
+
+
+--------------------------------------------------------------------------------
+
+test = ppPropSet $ justDoIt (basicAssert 1, v 1 := num 2)
+                 $ justDoIt (basicAssert 2, v 1 := num 5)
+                 $ justDoIt (basicAssert 3, v 0 :> (v 1 |+| v 2)) emptyPropSet
+  where
+  v x = tVar (toName x)
+  num = tConst
+
+  justDoIt p ps = case assertProp p ps of
+                    Right (a,gs) -> trace (show gs) a
+                    Left conf    -> error ("conflict: " ++ show conf)
 
 
 --------------------------------------------------------------------------------
@@ -58,6 +76,7 @@ newtype PropSet = PropSet RW
 data Prop       = Term :=  Term
                 | Term :>= Term
                 | Term :>  Term
+                  deriving Show
 
 ppProp :: Prop -> Doc
 ppProp prop =
@@ -78,21 +97,23 @@ emptyPropSet = PropSet initRW
 -- and a conjunction of disjunctions of new proposition.
 --  The propoerty is satisfiable
 -- as long as one of these sub-goals is compatible with the new state.
-assertProp :: Prop -> PropSet -> Either Error (PropSet, [[Prop]])
-assertProp prop (PropSet rw) =
+assertProp :: (Provenance,Prop) -> PropSet ->
+                      Either Provenance (PropSet, [[(Provenance,Prop)]])
+assertProp (proof,prop) (PropSet rw) =
   case prop of
 
-    t1 := t2  -> go (solveIs0 (ctEq t1 t2))
-    t1 :> t2  -> go (solveIsNeg (ctLt t1 t2))
-    t1 :>= t2 -> go (solveIsNeg (ctLt t1 (tConst 1 |+| t2)))
+    t1 := t2  -> go (solveIs0   (proof, ctEq t1 t2))
+    t1 :> t2  -> go (solveIsNeg (proof, ctLt t1 t2))
+    t1 :>= t2 -> go (solveIsNeg (proof, ctLt t1 (tConst 1 |+| t2)))
 
   where
   go m =
     case runS m rw of
       Error e -> Left e
       Ok _ rw1 ->
-        let cvt c = darkShadow c := tConst 0 
-                  : [ tConst 0 :> t | t <- grayShadow c ]
+        let mk f (p,t) = (p, f (tConst 0) t)
+            cvt c = mk (:=) (darkShadow c)
+                  : map (mk (:>)) (grayShadow c)
         in Right (PropSet rw1 { delayed = [] }, map cvt (delayed rw1))
 
 
@@ -108,15 +129,16 @@ ctLt t1 t2 = t1 |-| t2
 ctEq :: Term -> Term -> Term
 ctEq t1 t2 = t1 |-| t2
 
-data Bound      = Bound Integer Term  -- ^ The integer is strictly positive
+data Bound      = Bound Provenance Integer Term
+                  -- ^ The integer is strictly positive
                   deriving Show
 
 data BoundType  = Lower | Upper
                   deriving Show
 
-toCt :: BoundType -> Name -> Bound -> Term
-toCt Lower x (Bound c t) = ctLt t              (c |*| tVar x)
-toCt Upper x (Bound c t) = ctLt (c |*| tVar x) t
+toCt :: BoundType -> Name -> Bound -> (Provenance, Term)
+toCt Lower x (Bound p c t) = (p, ctLt t              (c |*| tVar x))
+toCt Upper x (Bound p c t) = (p, ctLt (c |*| tVar x) t)
 
 
 
@@ -135,9 +157,10 @@ data Inerts = Inerts
                        only an integer bound, the next smaller one may depend
                        on the largest one, etc. -}
 
-  , solved :: Map Name Term
-    -- ^ Definitions for resolved variables.
-    -- These form an idempotent substitution.
+  , solved :: Map Name (Provenance, Term)
+    {- ^ Definitions for resolved variables.
+    These form an idempotent substitution.
+    The provenance keeps track of how each equation came to be. -}
   } deriving Show
 
 ppInerts :: Inerts -> Doc
@@ -147,10 +170,10 @@ ppInerts is = vcat $ [ ppLower x b | (x,(ls,_)) <- bnds, b <- ls ] ++
   where
   bnds = Map.toList (bounds is)
 
-  ppT c x                = ppTerm (c |*| tVar x)
-  ppLower x (Bound c t)  = ppTerm t <+> text "<" <+> ppT c x
-  ppUpper x (Bound c t)  = ppT c x  <+> text "<" <+> ppTerm t
-  ppEq (x,t)             = ppName x <+> text "=" <+> ppTerm t
+  ppT c x                 = ppTerm (c |*| tVar x)
+  ppLower x (Bound _ c t) = ppTerm t <+> text "<" <+> ppT c x
+  ppUpper x (Bound _ c t) = ppT c x  <+> text "<" <+> ppTerm t
+  ppEq (x,(_,t))          = ppName x <+> text "=" <+> ppTerm t
 
 
 
@@ -161,9 +184,11 @@ iNone = Inerts { bounds = Map.empty
                }
 
 -- | Rewrite a term using the definitions from an inert set.
-iApSubst :: Inerts -> Term -> Term
+iApSubst :: Inerts -> (Provenance,Term) -> (Provenance,Term)
 iApSubst i t = foldr apS t $ Map.toList $ solved i
-  where apS (x,t1) t2 = tLet x t1 t2
+  where apS (x,(p1,t1)) (p2,t2) = case tLet' x t1 t2 of
+                                    Nothing  -> (p2,t2)
+                                    Just t2' -> (usesBoth p1 p2, t2')
 
 {- | Add a definition.  Upper and lower bound constraints that mention
 the variable are "kicked-out" so that they can be reinserted in the
@@ -185,14 +210,20 @@ only depend on smaller variables.  Instead, we'd have to rewrite the constraints
 so that `z` is constrained by `p`.
 -}
 
-iSolved :: Name -> Term -> Inerts -> ([Term], Inerts)
-iSolved x t i =
+iSolved :: Provenance -> Name -> Term -> Inerts -> ([(Provenance,Term)], Inerts)
+iSolved proof x t i =
   ( kickedOut
   , Inerts { bounds = otherBounds
-           , solved = Map.insert x t $ Map.map (tLet x t) $ solved i
+           , solved = Map.insert x (proof,t)
+                    $ Map.map updExisting
+                    $ solved i
            }
   )
   where
+  updExisting it@(prov,t1) = case tLet' x t t1 of
+                               Nothing -> it
+                               Just t2 -> (usesBoth proof prov, t2)
+
   (kickedOut, otherBounds) =
 
         -- First, we eliminate the bounds on `x` (i.e., `x` is in the key)
@@ -221,7 +252,7 @@ iSolved x t i =
          map (toCt Upper y) ubsKick
        )
 
-  stay (Bound _ bnd) = not (tHasVar x bnd)
+  stay (Bound _ _ bnd) = not (tHasVar x bnd)
 
 
 iModel :: Inerts -> [(Name,Integer)]
@@ -231,14 +262,14 @@ iModel i = goBounds [] (bounds i)
     case Map.maxViewWithKey mp of
       Nothing -> goEqs su $ Map.toList $ solved i
       Just ((x,(lbs0,ubs0)), mp1) ->
-        let lbs = [ Bound c (tLetNums su t) | Bound c t <- lbs0 ]
-            ubs = [ Bound c (tLetNums su t) | Bound c t <- ubs0 ]
+        let lbs = [ Bound p c (tLetNums su t) | Bound p c t <- lbs0 ]
+            ubs = [ Bound p c (tLetNums su t) | Bound p c t <- ubs0 ]
             sln = fromMaybe 0
                 $ mplus (iPickBounded Lower lbs) (iPickBounded Upper ubs)
         in goBounds ((x,sln) : su) mp1
 
   goEqs su [] = su
-  goEqs su ((x,t) : more) =
+  goEqs su ((x,(_,t)) : more) =
     let t1  = tLetNums su t
         vs  = tVarList t1
         su1 = [ (v,0) | v <- vs ] ++ (x,tConstPart t1) : su
@@ -260,15 +291,15 @@ iPickBounded bt bs =
   -- <=> (t+1)/c <= x
   -- <=> ceil((t+1)/c) <= x
   -- <=> t `div` c + 1 <= x
-  normBound Lower (Bound c t) = do k <- isConst t
-                                   return (k `div` c + 1)
+  normBound Lower (Bound _ c t) = do k <- isConst t
+                                     return (k `div` c + 1)
   -- c*x < t
   -- <=> c*x <= t-1
   -- <=> x   <= (t-1)/c
   -- <=> x   <= floor((t-1)/c)
   -- <=> x   <= (t-1) `div` c
-  normBound Upper (Bound c t) = do k <- isConst t
-                                   return (div (k-1) c)
+  normBound Upper (Bound _ c t) = do k <- isConst t
+                                     return (div (k-1) c)
 
 
 
@@ -276,32 +307,32 @@ iPickBounded bt bs =
 --------------------------------------------------------------------------------
 -- Solving constraints
 
-solveIs0 :: Term -> S ()
+solveIs0 :: (Provenance, Term) -> S ()
 solveIs0 t = solveIs0' =<< apSubst t
 
 -- | Solve a constraint if the form @t = 0@.
 -- Assumes substitution has already been applied.
-solveIs0' :: Term -> S ()
-solveIs0' t
+solveIs0' :: (Provenance, Term) -> S ()
+solveIs0' (proof,t)
 
   -- A == 0
-  | Just a <- isConst t = guarded "not 0" (a == 0)
+  | Just a <- isConst t = guarded proof (a == 0)
 
   -- A + B * x = 0
   | Just (a,b,x) <- tIsOneVar t =
     case divMod (-a) b of
-      (q,0) -> addDef x (tConst q)
-      _     -> failure "not divisible"
+      (q,0) -> addDef proof x (tConst q)
+      _     -> failure proof
 
   --  x + S = 0
   -- -x + S = 0
   | Just (xc,x,s) <- tGetSimpleCoeff t =
-    addDef x (if xc > 0 then tNeg s else s)
+    addDef proof x (if xc > 0 then tNeg s else s)
 
   -- A * S = 0
   -- This does not mess with new variables, so we don't need
   -- to re-apply the substitution.
-  | Just (_, s) <- tFactor t  = solveIs0' s
+  | Just (_, s) <- tFactor t  = solveIs0' (proof,s)
 
   -- See Section 3.1 of paper for details.
   -- We obtain an equivalent formulation but with smaller coefficients.
@@ -311,10 +342,10 @@ solveIs0' t
          let sgn  = signum ak
              soln =     (negate sgn * m) |*| tVar v
                     |+| tMapCoeff (\c -> sgn * modulus c m) s
-         addDef xk soln
+         addDef proof xk soln
 
          let upd i = div (2*i + m) (2*m) + modulus i m
-         solveIs0 (negate (abs ak) |*| tVar v |+| tMapCoeff upd s)
+         solveIs0 (proof, negate (abs ak) |*| tVar v |+| tMapCoeff upd s)
 
   | otherwise = error "solveIs0: unreachable"
 
@@ -322,23 +353,22 @@ modulus :: Integer -> Integer -> Integer
 modulus a m = a - m * div (2 * a + m) (2 * m)
 
 
-solveIsNeg :: Term -> S ()
+solveIsNeg :: (Provenance,Term) -> S ()
 solveIsNeg t = solveIsNeg' =<< apSubst t
-
 
 -- | Solve a constraint of the form @t < 0@.
 -- Assumes that substitution has been applied
-solveIsNeg' :: Term -> S ()
-solveIsNeg' t
+solveIsNeg' :: (Provenance, Term) -> S ()
+solveIsNeg' (proof,t)
 
   -- A < 0
-  | Just a <- isConst t = guarded "Not negative" (a < 0)
+  | Just a <- isConst t = guarded proof (a < 0)
 
   -- A * S < 0
   -- This does not mess with new variables, so we don't need
   -- to re-apply the substitution.
   -- Note: the constant is positive, so `s` must be negative.
-  | Just (_,s) <- tFactor t = solveIsNeg' s
+  | Just (_,s) <- tFactor t = solveIsNeg' (proof,s)
 
   -- See Section 5.1 of the paper.
   | Just (xc,x,s) <- tLeastVar t =
@@ -349,25 +379,27 @@ solveIsNeg' t
                then do ubs <- getBounds Upper x
                        let b    = negate xc
                            beta = s
-                       addBound Lower x (Bound b beta)
-                       return [ (a,alpha,b,beta) | Bound a alpha <- ubs ]
+                       addBound Lower x (Bound proof b beta)
+                       return [ (p, a,alpha,b,beta) | Bound p a alpha <- ubs ]
+
                -- XC*x + S < 0
                -- XC*x < -S
                else do lbs <- getBounds Lower x
                        let a     = xc
                            alpha = tNeg s
-                       addBound Upper x (Bound a alpha)
-                       return [ (a,alpha,b,beta) | Bound b beta <- lbs ]
+                       addBound Upper x (Bound proof a alpha)
+                       return [ (p,a,alpha,b,beta) | Bound p b beta <- lbs ]
 
       -- See Note [Shadows]
-       forM_ ctrs (\(a,alpha,b,beta) ->
-          do let real = ctLt (a |*| beta) (b |*| alpha)
+       forM_ ctrs (\(p,a,alpha,b,beta) ->
+          do let p1   = usesBoth proof p
+                 real = ctLt (a |*| beta) (b |*| alpha)
                  dark = ctLt (tConst (a * b)) (b |*| alpha |-| a |*| beta)
                  gray = [ ctEq (b |*| tVar x) (tConst i |+| beta)
                                                       | i <- [ 1 .. b - 1 ] ]
-             solveIsNeg real
-             delay ShadowCt { darkShadow = dark
-                            , grayShadow = gray
+             solveIsNeg (p1,real)
+             delay ShadowCt { darkShadow = (p1,dark)
+                            , grayShadow = map ((,) p1) gray
                             }
              )
 
@@ -407,8 +439,10 @@ which is covered by the dark shadow.
 
 
 -- | A disjunction of constraints.
-data ShadowCt   = ShadowCt { darkShadow :: Term       -- ^ this is negative
-                           , grayShadow :: [Term]     -- ^ these are 0
+data ShadowCt   = ShadowCt { darkShadow :: (Provenance,Term)
+                              -- ^ this is negative
+                           , grayShadow :: [(Provenance,Term)]
+                             -- ^ these are 0
                            } deriving Show
 
 
@@ -423,10 +457,8 @@ data RW         = RW { nameSource :: !Int
                      , delayed    :: ![ShadowCt]
                      } deriving Show
 
-data Answer a   = Error !Error
+data Answer a   = Error !Provenance
                 | Ok a !RW
-
-type Error      = String
 
 instance Monad S where
   return a      = S $ \s -> Ok a s
@@ -446,10 +478,10 @@ instance Applicative S where
 initRW :: RW
 initRW = RW { nameSource = 0, inerts = iNone, delayed = [] }
 
-failure :: Error -> S ()
+failure :: Provenance -> S ()
 failure msg = S $ \_ -> Error msg
 
-guarded :: Error -> Bool -> S ()
+guarded :: Provenance -> Bool -> S ()
 guarded msg ok = if ok then return () else failure msg
 
 updS :: (RW -> (a,RW)) -> S a
@@ -487,10 +519,12 @@ addBound bt x b = updS_ $ \rw ->
 
 -- | Add a new definition.
 -- Assumes substitution has already been applied
-addDef :: Name -> Term -> S ()
-addDef x t =
+addDef :: Provenance -> Name -> Term -> S ()
+addDef proof x t =
   do newWork <- updS $ \rw ->
-      let (newWork,newInerts) = iSolved x t (inerts rw)
+      let (newWork,newInerts) = iSolved proof x t (inerts rw)
+
+          -- XXX: Add provenance in ApSu
           apS d = ShadowCt
                     { darkShadow =      (iApSubst newInerts) (darkShadow d)
                     , grayShadow = fmap (iApSubst newInerts) (grayShadow d)
@@ -499,7 +533,7 @@ addDef x t =
      mapM_ solveIsNeg newWork
 
 -- | Apply the current substitution to this term.
-apSubst :: Term -> S Term
+apSubst :: (Provenance, Term) -> S (Provenance, Term)
 apSubst t =
   do i <- get inerts
      return (iApSubst i t)
@@ -507,6 +541,25 @@ apSubst t =
 -- | Add a shadow constraint to solve later.
 delay :: ShadowCt -> S ()
 delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
+
+
+
+--------------------------------------------------------------------------------
+
+
+{- | The provenance for an assertion keeps track of all other basic assertions
+that were used to construct it.   When we find a false assertion,
+we use the provenance to find which basic assertions lead to the conflict. -}
+newtype Provenance = Provenance IntSet
+                     deriving Show
+
+-- | The provenance for a basic assetion.
+basicAssert :: Int -> Provenance
+basicAssert n = Provenance (IntSet.singleton n)
+
+-- | Combine the multiple assertions together.
+usesBoth :: Provenance -> Provenance -> Provenance
+usesBoth (Provenance x) (Provenance y) = Provenance (IntSet.union x y)
 
 
 
@@ -574,6 +627,12 @@ t1 |-| t2 = t1 |+| tNeg t2
 tLet :: Name -> Term -> Term -> Term
 tLet x t1 t2 = let (a,t) = tSplitVar x t2
                in a |*| t1 |+| t
+
+-- | Replace a variable with a term, return `Nothing`, if no change.
+tLet' :: Name -> Term -> Term -> Maybe Term
+tLet' x t1 t2 = do let (a,t) = tSplitVar x t2
+                   guard (a /= 0)
+                   return (a |*| t1 |+| t)
 
 -- | Replace a variable with a numeric literal.
 tLetNum :: Name -> Integer -> Term -> Term
@@ -685,9 +744,6 @@ tLeastVar (T c m) =
 -- | Apply a function to all coefficients, including the constant.
 tMapCoeff :: (Integer -> Integer) -> Term -> Term
 tMapCoeff f (T c m) = T (f c) (fmap f m)
-
-
-
 
 
 
