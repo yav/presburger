@@ -75,9 +75,10 @@ emptyPropSet = PropSet initRW
 
 -- | Assert a proposition.  If we detect a contradiction, then
 -- we report the reason on the left.  Otherwise, we get a new proposet,
--- and a disjunction of new proposition.  The propoerty is satisfiable
+-- and a conjunction of disjunctions of new proposition.
+--  The propoerty is satisfiable
 -- as long as one of these sub-goals is compatible with the new state.
-assertProp :: Prop -> PropSet -> Either Error (PropSet, [Prop])
+assertProp :: Prop -> PropSet -> Either Error (PropSet, [[Prop]])
 assertProp prop (PropSet rw) =
   case prop of
 
@@ -90,12 +91,9 @@ assertProp prop (PropSet rw) =
     case runS m rw of
       Error e -> Left e
       Ok _ rw1 ->
-        let dark = [ darkShadow c := tConst 0 | c <- delayed rw1 ]
-            gray = [ tConst 0 :> t | c <- delayed rw1, t <- grayShadow c ]
-            subs = dark ++ gray
-        in case subs of
-             [x] -> assertProp x (PropSet rw1 { delayed = [] })
-             _   -> Right (PropSet rw1 { delayed = [] }, dark ++ gray)
+        let cvt c = darkShadow c := tConst 0 
+                  : [ tConst 0 :> t | t <- grayShadow c ]
+        in Right (PropSet rw1 { delayed = [] }, map cvt (delayed rw1))
 
 
 getModel :: PropSet -> [(Name,Integer)]
