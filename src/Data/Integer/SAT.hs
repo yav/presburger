@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE Trustworthy, PatternGuards, BangPatterns #-}
+{-# LANGUAGE Safe, PatternGuards, BangPatterns #-}
 {-|
 This module implements a decision procedure for quantifier-free linear
 arithmetic.  The algorithm is based on the following paper:
@@ -17,6 +17,12 @@ module Data.Integer.SAT
   , ppProp
   , assertProp
   , getModel
+
+  -- * Provenance
+  , Provenance
+  , basicAssert
+  , provenance
+  , ppProvenance
 
   -- * Terms
   , Term
@@ -39,8 +45,6 @@ module Data.Integer.SAT
   , ppName
   ) where
 
-import Debug.Trace
-
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.List(partition)
@@ -57,27 +61,24 @@ import           Control.Applicative(Applicative(..), (<$>))
 
 --------------------------------------------------------------------------------
 
-test = ppPropSet $ justDoIt (basicAssert 1, v 1 := num 2)
-                 $ justDoIt (basicAssert 2, v 1 := num 5)
-                 $ justDoIt (basicAssert 3, v 0 :> (v 1 |+| v 2)) emptyPropSet
-  where
-  v x = tVar (toName x)
-  num = tConst
-
-  justDoIt p ps = case assertProp p ps of
-                    Right (a,gs) -> trace (show gs) a
-                    Left conf    -> error ("conflict: " ++ show conf)
 
 
 --------------------------------------------------------------------------------
 
+-- | The current solver state.
 newtype PropSet = PropSet RW
 
+infix 4 :=, :>=, :>
+
+-- | A proposition.
 data Prop       = Term :=  Term
                 | Term :>= Term
                 | Term :>  Term
-                  deriving Show
 
+instance Show Prop where
+  showsPrec c p = showsPrec c (show (ppProp p))
+
+-- | Pretty print a proposition.
 ppProp :: Prop -> Doc
 ppProp prop =
   case prop of
@@ -85,6 +86,7 @@ ppProp prop =
     t1 :> t2  -> ppTerm t1 <+> text ">"  <+> ppTerm t2
     t1 :>= t2 -> ppTerm t1 <+> text ">=" <+> ppTerm t2
 
+-- | Pretty print the current solver state.
 ppPropSet :: PropSet -> Doc
 ppPropSet (PropSet rw) = ppInerts (inerts rw)
 
@@ -121,7 +123,7 @@ getModel :: PropSet -> [(Name,Integer)]
 getModel (PropSet rw) = iModel (inerts rw)
 
 --------------------------------------------------------------------------------
--- Constraints and Bound on Variables
+-- Constraints and Bounds on Variables
 
 ctLt :: Term -> Term -> Term
 ctLt t1 t2 = t1 |-| t2
@@ -551,7 +553,9 @@ delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
 that were used to construct it.   When we find a false assertion,
 we use the provenance to find which basic assertions lead to the conflict. -}
 newtype Provenance = Provenance IntSet
-                     deriving Show
+
+instance Show Provenance where
+  showsPrec p prov = showsPrec p (provenance prov)
 
 -- | The provenance for a basic assetion.
 basicAssert :: Int -> Provenance
@@ -562,6 +566,14 @@ usesBoth :: Provenance -> Provenance -> Provenance
 usesBoth (Provenance x) (Provenance y) = Provenance (IntSet.union x y)
 
 
+-- | Pretty print a provenance set.
+ppProvenance :: Provenance -> Doc
+ppProvenance (Provenance x) =
+  brackets $ sep $ punctuate comma $ map int $ IntSet.toList x
+
+-- | The basic assertions in this provenance set.
+provenance :: Provenance -> IntSet
+provenance (Provenance x) = x
 
 
 --------------------------------------------------------------------------------
@@ -598,7 +610,7 @@ infixr 7 |*|
 tConst :: Integer -> Term
 tConst k = T k Map.empty
 
--- | A constant.
+-- | An uninterpreted constant.
 tVar :: Name -> Term
 tVar x = T 0 (Map.singleton x 1)
 
