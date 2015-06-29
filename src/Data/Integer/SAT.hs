@@ -13,6 +13,8 @@ module Data.Integer.SAT
   ( -- * Solver states
     PropSet
   , emptyPropSet
+  , ppPropSet
+
   , Prop
   , (|=|)
   , (|<|)
@@ -38,7 +40,6 @@ module Data.Integer.SAT
   , tLetNum
   , tLetNums
   , ppTerm
-  , ppPropSet
 
   -- * Names
   , Name
@@ -73,8 +74,9 @@ x |<| y = PLt0 (ctLt x y)
 
 --------------------------------------------------------------------------------
 
--- | The current solver state.
-newtype PropSet p = PropSet (RW p)
+-- | The current solver state. The type parameter is used to name the
+-- propsitions that are currently asserted.
+newtype PropSet lit = PropSet (RW lit)
 
 
 -- | A proposition.
@@ -91,25 +93,27 @@ ppProp prop =
     PLt0 t  -> ppTerm t <+> text "<"  <+> text "0"
 
 -- | Pretty print the current solver state.
-ppPropSet :: PropSet p -> Doc
+ppPropSet :: PropSet lit -> Doc
 ppPropSet (PropSet rw) = ppInerts (inerts rw)
 
 -- | An empty set of assertions.
-emptyPropSet :: PropSet p
+emptyPropSet :: PropSet lit
 emptyPropSet = PropSet initRW
 
 {- | Assert a proposition.
 
     * If we detect a contradiction, then we report the reason on the left.
-
     * Otherwise, we get a new proposet, and a conjunction of disjunctions
       of new proposition.
 
 The propoerty is satisfiable as long as one of these sub-goals is
 compatible with the new state.
 -}
-assertProp :: Ord p => (Provenance p,Prop) -> PropSet p ->
-                      Either (Provenance p) (PropSet p, [[(Provenance p,Prop)]])
+assertProp :: Ord lit =>
+  (Provenance lit, Prop) ->
+  PropSet lit ->
+  Either (Provenance lit)
+         (PropSet lit, [[(Provenance lit, Prop)]])
 assertProp (proof,prop) (PropSet rw) =
   case prop of
     PEq0 t  -> go (solveIs0   (proof, t))
@@ -125,7 +129,7 @@ assertProp (proof,prop) (PropSet rw) =
         in Right (PropSet rw1 { delayed = [] }, map cvt (delayed rw1))
 
 
-getModel :: PropSet p -> [(Name,Integer)]
+getModel :: PropSet lit -> [(Name,Integer)]
 getModel (PropSet rw) = iModel (inerts rw)
 
 --------------------------------------------------------------------------------
@@ -137,14 +141,14 @@ ctLt t1 t2 = t1 |-| t2
 ctEq :: Term -> Term -> Term
 ctEq t1 t2 = t1 |-| t2
 
-data Bound a    = Bound (Provenance a) Integer Term
+data Bound lit  = Bound (Provenance lit) Integer Term
                   -- ^ The integer is strictly positive
                   deriving Show
 
 data BoundType  = Lower | Upper
                   deriving Show
 
-toCt :: BoundType -> Name -> Bound a -> (Provenance a, Term)
+toCt :: BoundType -> Name -> Bound lit -> (Provenance lit, Term)
 toCt Lower x (Bound p c t) = (p, ctLt t              (c |*| tVar x))
 toCt Upper x (Bound p c t) = (p, ctLt (c |*| tVar x) t)
 
@@ -556,29 +560,29 @@ delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
 
 
 {- | The provenance for an assertion keeps track of all other basic assertions
-that were used to construct it.   When we find a false assertion,
+that were used to construct it.   When we find a contradiction,
 we use the provenance to find which basic assertions lead to the conflict. -}
-newtype Provenance a = Provenance (Set a)
+newtype Provenance lit = Provenance (Set lit)
 
-instance Show a => Show (Provenance a) where
+instance Show lit => Show (Provenance lit) where
   showsPrec p prov = showsPrec p (provenance prov)
 
 -- | The provenance for a basic assetion.
-basicAssert :: a -> Provenance a
+basicAssert :: lit -> Provenance lit
 basicAssert n = Provenance (Set.singleton n)
 
 -- | Combine the multiple assertions together.
-usesBoth :: Ord a => Provenance a -> Provenance a -> Provenance a
+usesBoth :: Ord lit => Provenance lit -> Provenance lit -> Provenance lit
 usesBoth (Provenance x) (Provenance y) = Provenance (Set.union x y)
 
 
 -- | Pretty print a provenance set.
-ppProvenance :: (a -> Doc) -> Provenance a -> Doc
+ppProvenance :: (lit -> Doc) -> Provenance lit -> Doc
 ppProvenance pp (Provenance x) =
-  brackets $ sep $ punctuate comma $ map pp$ Set.toList x
+  brackets $ sep $ punctuate comma $ map pp $ Set.toList x
 
 -- | The basic assertions in this provenance set.
-provenance :: Provenance a -> Set a
+provenance :: Provenance lit -> Set lit
 provenance (Provenance x) = x
 
 
