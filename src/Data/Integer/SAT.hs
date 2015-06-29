@@ -53,8 +53,8 @@ import           Data.List(partition)
 import           Data.Maybe(maybeToList,fromMaybe)
 import           Control.Monad(liftM,ap,forM_,mplus,guard)
 import           Text.PrettyPrint
-import           Data.IntSet ( IntSet )
-import qualified Data.IntSet as IntSet
+import           Data.Set ( Set )
+import qualified Data.Set as Set
 
 #if __GLASGOW_HASKELL__ < 710
 import           Control.Applicative(Applicative(..), (<$>))
@@ -74,7 +74,7 @@ x |<| y = PLt0 (ctLt x y)
 --------------------------------------------------------------------------------
 
 -- | The current solver state.
-newtype PropSet = PropSet RW
+newtype PropSet p = PropSet (RW p)
 
 
 -- | A proposition.
@@ -91,11 +91,11 @@ ppProp prop =
     PLt0 t  -> ppTerm t <+> text "<"  <+> text "0"
 
 -- | Pretty print the current solver state.
-ppPropSet :: PropSet -> Doc
+ppPropSet :: PropSet p -> Doc
 ppPropSet (PropSet rw) = ppInerts (inerts rw)
 
 -- | An empty set of assertions.
-emptyPropSet :: PropSet
+emptyPropSet :: PropSet p
 emptyPropSet = PropSet initRW
 
 {- | Assert a proposition.
@@ -108,8 +108,8 @@ emptyPropSet = PropSet initRW
 The propoerty is satisfiable as long as one of these sub-goals is
 compatible with the new state.
 -}
-assertProp :: (Provenance,Prop) -> PropSet ->
-                      Either Provenance (PropSet, [[(Provenance,Prop)]])
+assertProp :: Ord p => (Provenance p,Prop) -> PropSet p ->
+                      Either (Provenance p) (PropSet p, [[(Provenance p,Prop)]])
 assertProp (proof,prop) (PropSet rw) =
   case prop of
     PEq0 t  -> go (solveIs0   (proof, t))
@@ -125,7 +125,7 @@ assertProp (proof,prop) (PropSet rw) =
         in Right (PropSet rw1 { delayed = [] }, map cvt (delayed rw1))
 
 
-getModel :: PropSet -> [(Name,Integer)]
+getModel :: PropSet p -> [(Name,Integer)]
 getModel (PropSet rw) = iModel (inerts rw)
 
 --------------------------------------------------------------------------------
@@ -137,14 +137,14 @@ ctLt t1 t2 = t1 |-| t2
 ctEq :: Term -> Term -> Term
 ctEq t1 t2 = t1 |-| t2
 
-data Bound      = Bound Provenance Integer Term
+data Bound a    = Bound (Provenance a) Integer Term
                   -- ^ The integer is strictly positive
                   deriving Show
 
 data BoundType  = Lower | Upper
                   deriving Show
 
-toCt :: BoundType -> Name -> Bound -> (Provenance, Term)
+toCt :: BoundType -> Name -> Bound a -> (Provenance a, Term)
 toCt Lower x (Bound p c t) = (p, ctLt t              (c |*| tVar x))
 toCt Upper x (Bound p c t) = (p, ctLt (c |*| tVar x) t)
 
@@ -155,8 +155,8 @@ toCt Upper x (Bound p c t) = (p, ctLt (c |*| tVar x) t)
 
 
 -- | The inert contains the solver state on one possible path.
-data Inerts = Inerts
-  { bounds :: Map Name ([Bound],[Bound])
+data Inerts a = Inerts
+  { bounds :: Map Name ([Bound a],[Bound a])
     {- ^ Known lower and upper bounds for variables.
           * Each bound @(c,t)@ in the first list asserts that  @t < c * x@
           * Each bound @(c,t)@ in the second list asserts that @c * x < t@
@@ -165,13 +165,13 @@ data Inerts = Inerts
                        only an integer bound, the next smaller one may depend
                        on the largest one, etc. -}
 
-  , solved :: Map Name (Provenance, Term)
+  , solved :: Map Name (Provenance a, Term)
     {- ^ Definitions for resolved variables.
     These form an idempotent substitution.
     The provenance keeps track of how each equation came to be. -}
   } deriving Show
 
-ppInerts :: Inerts -> Doc
+ppInerts :: Inerts a -> Doc
 ppInerts is = vcat $ [ ppLower x b | (x,(ls,_)) <- bnds, b <- ls ] ++
                      [ ppUpper x b | (x,(_,us)) <- bnds, b <- us ] ++
                      [ ppEq e      | e <- Map.toList (solved is) ]
@@ -186,13 +186,13 @@ ppInerts is = vcat $ [ ppLower x b | (x,(ls,_)) <- bnds, b <- ls ] ++
 
 
 -- | An empty inert set.
-iNone :: Inerts
+iNone :: Inerts a
 iNone = Inerts { bounds = Map.empty
                , solved = Map.empty
                }
 
 -- | Rewrite a term using the definitions from an inert set.
-iApSubst :: Inerts -> (Provenance,Term) -> (Provenance,Term)
+iApSubst :: Ord a => Inerts a -> (Provenance a,Term) -> (Provenance a,Term)
 iApSubst i t = foldr apS t $ Map.toList $ solved i
   where apS (x,(p1,t1)) (p2,t2) = case tLet' x t1 t2 of
                                     Nothing  -> (p2,t2)
@@ -218,7 +218,8 @@ only depend on smaller variables.  Instead, we'd have to rewrite the constraints
 so that `z` is constrained by `p`.
 -}
 
-iSolved :: Provenance -> Name -> Term -> Inerts -> ([(Provenance,Term)], Inerts)
+iSolved :: Ord a => Provenance a -> Name -> Term -> Inerts a ->
+                                            ([(Provenance a,Term)], Inerts a)
 iSolved proof x t i =
   ( kickedOut
   , Inerts { bounds = otherBounds
@@ -263,7 +264,7 @@ iSolved proof x t i =
   stay (Bound _ _ bnd) = not (tHasVar x bnd)
 
 
-iModel :: Inerts -> [(Name,Integer)]
+iModel :: Inerts a -> [(Name,Integer)]
 iModel i = goBounds [] (bounds i)
   where
   goBounds su mp =
@@ -286,7 +287,7 @@ iModel i = goBounds [] (bounds i)
 
 -- Given a list of lower (resp. upper) bounds, compute the least (resp. largest)
 -- value that satisfies them all.
-iPickBounded :: BoundType -> [Bound] -> Maybe Integer
+iPickBounded :: BoundType -> [Bound a] -> Maybe Integer
 iPickBounded _ [] = Nothing
 iPickBounded bt bs =
   do xs <- mapM (normBound bt) bs
@@ -315,12 +316,12 @@ iPickBounded bt bs =
 --------------------------------------------------------------------------------
 -- Solving constraints
 
-solveIs0 :: (Provenance, Term) -> S ()
+solveIs0 :: Ord a => (Provenance a, Term) -> S a ()
 solveIs0 t = solveIs0' =<< apSubst t
 
 -- | Solve a constraint if the form @t = 0@.
 -- Assumes substitution has already been applied.
-solveIs0' :: (Provenance, Term) -> S ()
+solveIs0' :: Ord a => (Provenance a, Term) -> S a ()
 solveIs0' (proof,t)
 
   -- A == 0
@@ -361,12 +362,12 @@ modulus :: Integer -> Integer -> Integer
 modulus a m = a - m * div (2 * a + m) (2 * m)
 
 
-solveIsNeg :: (Provenance,Term) -> S ()
+solveIsNeg :: Ord a => (Provenance a,Term) -> S a ()
 solveIsNeg t = solveIsNeg' =<< apSubst t
 
 -- | Solve a constraint of the form @t < 0@.
 -- Assumes that substitution has been applied
-solveIsNeg' :: (Provenance, Term) -> S ()
+solveIsNeg' :: Ord a => (Provenance a, Term) -> S a ()
 solveIsNeg' (proof,t)
 
   -- A < 0
@@ -447,9 +448,9 @@ which is covered by the dark shadow.
 
 
 -- | A disjunction of constraints.
-data ShadowCt   = ShadowCt { darkShadow :: (Provenance,Term)
+data ShadowCt a = ShadowCt { darkShadow :: (Provenance a,Term)
                               -- ^ this is negative
-                           , grayShadow :: [(Provenance,Term)]
+                           , grayShadow :: [(Provenance a,Term)]
                              -- ^ these are 0
                            } deriving Show
 
@@ -458,17 +459,17 @@ data ShadowCt   = ShadowCt { darkShadow :: (Provenance,Term)
 --------------------------------------------------------------------------------
 -- Monad
 
-newtype S a     = S { runS :: RW -> Answer a }
+newtype S p a   = S { runS :: RW p -> Answer p a }
 
-data RW         = RW { nameSource :: !Int
-                     , inerts     :: Inerts
-                     , delayed    :: ![ShadowCt]
+data RW p       = RW { nameSource :: !Int
+                     , inerts     :: !(Inerts p)
+                     , delayed    :: ![ShadowCt p]
                      } deriving Show
 
-data Answer a   = Error !Provenance
-                | Ok a !RW
+data Answer p a = Error !(Provenance p)
+                | Ok a !(RW p)
 
-instance Monad S where
+instance Monad (S p) where
   return a      = S $ \s -> Ok a s
   fail s        = error s
   S m >>= k     = S $ \s -> case m s of
@@ -476,39 +477,39 @@ instance Monad S where
                                          in m1 s1
                               Error e  -> Error e
 
-instance Functor S where
+instance Functor (S p) where
   fmap = liftM
 
-instance Applicative S where
+instance Applicative (S p) where
   pure  = return
   (<*>) = ap
 
-initRW :: RW
+initRW :: RW p
 initRW = RW { nameSource = 0, inerts = iNone, delayed = [] }
 
-failure :: Provenance -> S ()
+failure :: Provenance p -> S p ()
 failure msg = S $ \_ -> Error msg
 
-guarded :: Provenance -> Bool -> S ()
+guarded :: Provenance p -> Bool -> S p ()
 guarded msg ok = if ok then return () else failure msg
 
-updS :: (RW -> (a,RW)) -> S a
+updS :: (RW p -> (a,RW p)) -> S p a
 updS f = S $ \s -> case f s of
                      (a,s1) -> Ok a s1
 
-updS_ :: (RW -> RW) -> S ()
+updS_ :: (RW p -> RW p) -> S p ()
 updS_ f = updS $ \rw -> ((), f rw)
 
-get :: (RW -> a) -> S a
+get :: (RW p -> a) -> S p a
 get f = updS $ \rw -> (f rw, rw)
 
-newVar :: S Name
+newVar :: S p Name
 newVar = updS $ \rw -> ( SysName (nameSource rw)
                        , rw { nameSource = nameSource rw + 1 }
                        )
 
 -- | Get lower ('fst'), or upper ('snd') bounds for a variable.
-getBounds :: BoundType -> Name -> S [Bound]
+getBounds :: BoundType -> Name -> S p [Bound p]
 getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
                                Nothing -> []
                                Just bs -> case f of
@@ -516,7 +517,7 @@ getBounds f x = get $ \rw -> case Map.lookup x $ bounds $ inerts rw of
                                             Upper -> snd bs
 
 -- | Add an upper or lower bound on a given (multiple of a) variable.
-addBound :: BoundType -> Name -> Bound -> S ()
+addBound :: BoundType -> Name -> Bound p -> S p ()
 addBound bt x b = updS_ $ \rw ->
   let i     = inerts rw
       entry = case bt of
@@ -527,7 +528,7 @@ addBound bt x b = updS_ $ \rw ->
 
 -- | Add a new definition.
 -- Assumes substitution has already been applied
-addDef :: Provenance -> Name -> Term -> S ()
+addDef :: Ord p => Provenance p -> Name -> Term -> S p ()
 addDef proof x t =
   do newWork <- updS $ \rw ->
       let (newWork,newInerts) = iSolved proof x t (inerts rw)
@@ -540,13 +541,13 @@ addDef proof x t =
      mapM_ solveIsNeg newWork
 
 -- | Apply the current substitution to this term.
-apSubst :: (Provenance, Term) -> S (Provenance, Term)
+apSubst :: Ord p => (Provenance p, Term) -> S p (Provenance p, Term)
 apSubst t =
   do i <- get inerts
      return (iApSubst i t)
 
 -- | Add a shadow constraint to solve later.
-delay :: ShadowCt -> S ()
+delay :: ShadowCt p -> S p ()
 delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
 
 
@@ -557,27 +558,27 @@ delay ct = updS_ (\rw -> rw { delayed = ct : delayed rw })
 {- | The provenance for an assertion keeps track of all other basic assertions
 that were used to construct it.   When we find a false assertion,
 we use the provenance to find which basic assertions lead to the conflict. -}
-newtype Provenance = Provenance IntSet
+newtype Provenance a = Provenance (Set a)
 
-instance Show Provenance where
+instance Show a => Show (Provenance a) where
   showsPrec p prov = showsPrec p (provenance prov)
 
 -- | The provenance for a basic assetion.
-basicAssert :: Int -> Provenance
-basicAssert n = Provenance (IntSet.singleton n)
+basicAssert :: a -> Provenance a
+basicAssert n = Provenance (Set.singleton n)
 
 -- | Combine the multiple assertions together.
-usesBoth :: Provenance -> Provenance -> Provenance
-usesBoth (Provenance x) (Provenance y) = Provenance (IntSet.union x y)
+usesBoth :: Ord a => Provenance a -> Provenance a -> Provenance a
+usesBoth (Provenance x) (Provenance y) = Provenance (Set.union x y)
 
 
 -- | Pretty print a provenance set.
-ppProvenance :: Provenance -> Doc
-ppProvenance (Provenance x) =
-  brackets $ sep $ punctuate comma $ map int $ IntSet.toList x
+ppProvenance :: (a -> Doc) -> Provenance a -> Doc
+ppProvenance pp (Provenance x) =
+  brackets $ sep $ punctuate comma $ map pp$ Set.toList x
 
 -- | The basic assertions in this provenance set.
-provenance :: Provenance -> IntSet
+provenance :: Provenance a -> Set a
 provenance (Provenance x) = x
 
 
