@@ -9,7 +9,7 @@ arithmetic.  The algorithm is based on the following paper:
   by
   Sergey Berezin, Vijay Ganesh, and David L. Dill
 -}
-module Data.Integer.SAT
+module Data.Integer.Decide
   ( -- * Solver states
     PropSet
   , emptyPropSet

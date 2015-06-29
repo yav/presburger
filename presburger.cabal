@@ -16,7 +16,7 @@ library
   Build-Depends:  base < 10, containers, pretty
   hs-source-dirs: src
   Exposed-modules:
-    Data.Integer.SAT
+    Data.Integer.Decide
 
   GHC-options:    -O2 -Wall
 
