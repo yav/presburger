@@ -13,7 +13,9 @@ module Data.Integer.SAT
   ( -- * Solver states
     PropSet
   , emptyPropSet
-  , Prop(..)
+  , Prop
+  , (|=|)
+  , (|<|)
   , ppProp
   , assertProp
   , getModel
@@ -61,19 +63,22 @@ import           Control.Applicative(Applicative(..), (<$>))
 
 --------------------------------------------------------------------------------
 
+infix 4 |=|, |<|
 
+(|=|) :: Term -> Term -> Prop
+x |=| y = PEq0 (ctEq x y)
+
+(|<|) :: Term -> Term -> Prop
+x |<| y = PLt0 (ctLt x y)
 
 --------------------------------------------------------------------------------
 
 -- | The current solver state.
 newtype PropSet = PropSet RW
 
-infix 4 :=, :>=, :>
 
 -- | A proposition.
-data Prop       = Term :=  Term
-                | Term :>= Term
-                | Term :>  Term
+data Prop       = PEq0 Term | PLt0 Term
 
 instance Show Prop where
   showsPrec c p = showsPrec c (show (ppProp p))
@@ -82,9 +87,8 @@ instance Show Prop where
 ppProp :: Prop -> Doc
 ppProp prop =
   case prop of
-    t1 := t2  -> ppTerm t1 <+> text "="  <+> ppTerm t2
-    t1 :> t2  -> ppTerm t1 <+> text ">"  <+> ppTerm t2
-    t1 :>= t2 -> ppTerm t1 <+> text ">=" <+> ppTerm t2
+    PEq0 t  -> ppTerm t <+> text "="  <+> text "0"
+    PLt0 t  -> ppTerm t <+> text "<"  <+> text "0"
 
 -- | Pretty print the current solver state.
 ppPropSet :: PropSet -> Doc
@@ -94,28 +98,30 @@ ppPropSet (PropSet rw) = ppInerts (inerts rw)
 emptyPropSet :: PropSet
 emptyPropSet = PropSet initRW
 
--- | Assert a proposition.  If we detect a contradiction, then
--- we report the reason on the left.  Otherwise, we get a new proposet,
--- and a conjunction of disjunctions of new proposition.
---  The propoerty is satisfiable
--- as long as one of these sub-goals is compatible with the new state.
+{- | Assert a proposition.
+
+    * If we detect a contradiction, then we report the reason on the left.
+
+    * Otherwise, we get a new proposet, and a conjunction of disjunctions
+      of new proposition.
+
+The propoerty is satisfiable as long as one of these sub-goals is
+compatible with the new state.
+-}
 assertProp :: (Provenance,Prop) -> PropSet ->
                       Either Provenance (PropSet, [[(Provenance,Prop)]])
 assertProp (proof,prop) (PropSet rw) =
   case prop of
-
-    t1 := t2  -> go (solveIs0   (proof, ctEq t1 t2))
-    t1 :> t2  -> go (solveIsNeg (proof, ctLt t1 t2))
-    t1 :>= t2 -> go (solveIsNeg (proof, ctLt t1 (tConst 1 |+| t2)))
-
+    PEq0 t  -> go (solveIs0   (proof, t))
+    PLt0 t  -> go (solveIsNeg (proof, t))
   where
   go m =
     case runS m rw of
       Error e -> Left e
       Ok _ rw1 ->
-        let mk f (p,t) = (p, f (tConst 0) t)
-            cvt c = mk (:=) (darkShadow c)
-                  : map (mk (:>)) (grayShadow c)
+        let mk f (p,t) = (p, f t)
+            cvt c =      mk PLt0  (darkShadow c)
+                  : map (mk PEq0) (grayShadow c)
         in Right (PropSet rw1 { delayed = [] }, map cvt (delayed rw1))
 
 
@@ -526,7 +532,6 @@ addDef proof x t =
   do newWork <- updS $ \rw ->
       let (newWork,newInerts) = iSolved proof x t (inerts rw)
 
-          -- XXX: Add provenance in ApSu
           apS d = ShadowCt
                     { darkShadow =      (iApSubst newInerts) (darkShadow d)
                     , grayShadow = fmap (iApSubst newInerts) (grayShadow d)
