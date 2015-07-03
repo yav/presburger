@@ -6,31 +6,28 @@ import           Data.IntMap ( IntMap )
 import qualified Data.IntMap as IntMap
 import           Data.IntSet ( IntSet )
 import qualified Data.IntSet as IntSet
-import           Data.List ( partition )
-import           Control.Monad (mplus)
+import           Data.List ( partition, find )
 
 import System.Environment
-
-dbg | False = trace
-    | otherwise = \_ x -> x
 
 main :: IO ()
 main = mapM_ testFile =<< getArgs
 
 testFile file =
-  do mapM_ putStrLn (replicate 30 "")
-     putStr (show file ++ " ")
+  do putStr (show file ++ " ")
      txt <- readFile file
      let lss = dimacs txt
      case checkSat lss of
        Nothing -> putStrLn "unsat"
-       Just m | all (any (val m)) lss -> putStrLn "sat"
-              | otherwise -> putStrLn "BUG, invalid SAT"
+       Just m | Just bad <- find (unsatClause m) lss
+                        -> error $ unlines [ "BUG", show m, show bad ]
+              | otherwise -> putStrLn "sat"
   where
   val m x = if x > 0 then m IntMap.! x else not (m IntMap.! negate x)
+  unsatClause m = all (not . val m)
 
 dimacs :: String -> [[Lit]]
-dimacs = map (map read . init) . filter (not . skip) . map words . lines
+dimacs = map (map read . init) . filter (not . skip) . map words . fst . break (=="%") . lines
   where
   skip [] = True
   skip ("c" : _) = True
@@ -39,9 +36,8 @@ dimacs = map (map read . init) . filter (not . skip) . map words . lines
 
 checkSat :: [[Lit]] -> Maybe (IntMap{-Var-} Bool)
 checkSat lss =
-  dbg (show (IntSet.size vs, length lss)) $
   do (cs,us) <- foldr add (Just (noClauses,[])) lss
-     search0 vs cs us
+     search vs 0 [] cs IntMap.empty us
   where
   vs       = IntSet.fromList [ abs l | ls <- lss, l <- ls ]
   add c mb = do (cs,us) <- mb
@@ -96,14 +92,15 @@ data Clause     = Clause { posLits :: IntSet {- Var -}
                          } deriving Show
 
 showClause :: Clause -> String
-showClause c = show (IntSet.toList (posLits c) ++
-                          map negate (IntSet.toList (negLits c)))
+showClause c = unwords $ map show (IntSet.toList (posLits c) ++
+                          map negate (IntSet.toList (negLits c) ++ [0]))
 
 claFalse :: Clause
 claFalse = Clause { posLits = IntSet.empty, negLits = IntSet.empty }
 
 clauseVars :: Clause -> IntSet {- Var -}
 clauseVars c = IntSet.union (negLits c) (posLits c)
+
 --------------------------------------------------------------------------------
 
 type ClauseId   = Int
@@ -142,14 +139,12 @@ setLitFalse ::
     , Clauses           -- Rearranged collection of clauses.
     )
 setLitFalse as l ws =
-  dbg ("Setting " ++ show l ++ " to false") $
   case IntMap.updateLookupWithKey (\_ _ -> Nothing) l (clauses ws) of
     (Nothing, _)  -> ([], ws)
     (Just cs, mp) -> go [] [] mp (watched ws) cs
 
   where
   go unitRes u cs ps [] =
-    dbg ("units: " ++ show (map fst unitRes)) $
     (unitRes, ws { clauses = IntMap.insert l u cs, watched = ps })
 
   go unitRes u cs ps ((cid,c) : more) =
@@ -157,17 +152,13 @@ setLitFalse as l ws =
       (o, Just l') -> go unitRes u (IntMap.insertWith (++) l' [(cid,c)] cs)
                                    (IntMap.insert cid (o,l') ps)
                                    more
-      (o, Nothing) -> go ((o,c) : unitRes) ((cid,c): u) cs ps more
+      (o, Nothing) -> go ((o,c) : unitRes) ((cid,c) : u) cs ps more
 
   newLoc cid c =
-    let avoid     = IntSet.insert (abs l) $ IntSet.insert (abs o)
-                                          $ IntMap.keysSet as
-        o         = other cid
-        get f     = fmap fst (IntSet.minView (f c `IntSet.difference` avoid))
-
-    in (o, let xx = get posLits `mplus` fmap negate (get negLits)
-           in dbg ("moving " ++ show c ++ " to " ++ show xx) xx
-      )
+    let o       = other cid
+        avoid x = x == o || x == l || litVal x as == Just False
+    in (o, find (not . avoid) (IntSet.toList (posLits c) ++
+                                    map negate (IntSet.toList (negLits c))))
 
   other cid = case IntMap.lookup cid (watched ws) of
                 Just (a,b) -> if a == l then b else a
@@ -184,6 +175,12 @@ data Reason       = ImpliedBy    !Clause
 
 type Assignment   = IntMap {-Var-} (Reason, Bool)
 
+litVal :: Lit -> Assignment -> Maybe Bool
+litVal l as
+  | l > 0     = fmap snd         (IntMap.lookup l as)
+  | otherwise = fmap (not . snd) (IntMap.lookup (negate l) as)
+
+showAssign :: Assignment -> String
 showAssign as =
               show [ if b then x else negate x | (x,(_,b)) <- IntMap.toList as ]
 
@@ -197,42 +194,33 @@ pickVar vs as =
   do (a,_) <- IntSet.minView (vs `IntSet.difference` IntMap.keysSet as)
      return a
 
-
+guess :: IntSet{-Var-} -> Int -> [(Int,Assignment)] -> Clauses ->
+                                      Assignment -> Maybe (IntMap{-Var-} Bool)
 guess vs d asUndo cs as =
-  trace (let (n,as') = head asUndo in show n ++ ": " ++ showAssign as')
-  $
   case pickVar vs as of
     Nothing -> Just (fmap snd as)
     Just v  ->
-      trace (show d ++ ": guessing " ++ show v ++ " to be true") $
-      let (cs1,as1,units)  = setLitTrue v (GuessAtLevel d) cs as
-      in search vs d asUndo cs1 as1 units
+      let d'               = d + 1
+          (cs1,as1,units)  = setLitTrue v (GuessAtLevel d') cs as
+      in search vs d' ((d,as) : asUndo) cs1 as1 units
 
 
-search0 vs cs us =
-  case propagate cs IntMap.empty us of
-    (cs1,as1,mbConf) ->
-       case mbConf of
-         Just _  -> Nothing
-         Nothing -> guess vs 1 [(0,as1)] cs1 as1
-
+search :: IntSet{-Var-} -> Int -> [(Int,Assignment)] -> Clauses ->
+                Assignment -> [(Lit,Clause)] -> Maybe (IntMap{-Var-} Bool)
 search vs d asUndo cs as us =
   case propagate cs as us of
     (cs1,as1,mbConf) ->
        case mbConf of
-         Nothing -> guess vs (d+1) ((d,as1) : asUndo) cs1 as1
+         Nothing -> guess vs d asUndo cs1 as1
          Just c  ->
-           trace ("conflict: " ++ showClause c) $
            case analyzeConflict as1 c of
              LearnedFalse    -> Nothing
              Learned d' u mb ->
                let cs2 = case mb of
                            Nothing -> cs1
                            Just l  -> addClause u l cs1
-                   (_,as') : asUndo' = dropWhile ((>d') . fst) asUndo
-               in trace ("learned: " ++ showClause (snd u))
-                  $ trace ("undo to " ++ show d')
-                  $ search vs d' asUndo' cs2 as' [u]
+                   (_,as') : asUndo' = dropWhile ((> d') . fst) asUndo
+               in search vs d' asUndo' cs2 as' [u]
 
 
 --------------------------------------------------------------------------------
@@ -245,7 +233,6 @@ propagate ws as todo =
   case todo of
     []            -> (ws, as, Nothing)
     (l, c) : more ->
-      trace ("prpagate: " ++ show l) $
       case IntMap.lookup (abs l) as of
 
         Just (_,True)
@@ -275,12 +262,7 @@ setLitTrue :: Lit -> Reason -> Clauses -> Assignment ->
 setLitTrue l reason ws as = (ws', as', unit)
   where
   (unit, ws')   = setLitFalse as' (negate l) ws
-  as'           = IntMap.insert x (reason, b) as
-
-  x             = abs l
-  b             = l > 0
-
-
+  as'           = IntMap.insert (abs l) (reason, l > 0) as
 
 --------------------------------------------------------------------------------
 
@@ -291,7 +273,8 @@ data LearnedClause =
 {- | Given an assignment and a conflict clause, compute how far to undo,
      and a new learned clause. -}
 analyzeConflict :: Assignment -> Clause -> LearnedClause
-analyzeConflict as c = go IntSet.empty (IntMap.empty, claFalse) (clauseVars c)
+analyzeConflict as c =
+  go IntSet.empty (IntMap.empty, claFalse) (clauseVars c)
   where
   go done result@(undo,learn) todo =
     case IntSet.minView todo of
