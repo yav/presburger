@@ -85,6 +85,8 @@ type Var = Int
 --    * 0 is not a valid literal.
 type Lit = Int
 
+type MaybeLit = Int   -- ^ Use 0 for 'Nothing'
+
 -- | A set of literals.
 -- Invariant: a variable may appear in at most one of 'posLits' and 'negLits'.
 data Clause     = Clause { posLits :: IntSet {- Var -}
@@ -216,9 +218,8 @@ search vs d asUndo cs as us =
            case analyzeConflict as1 c of
              LearnedFalse    -> Nothing
              Learned d' u mb ->
-               let cs2 = case mb of
-                           Nothing -> cs1
-                           Just l  -> addClause u l cs1
+               let cs2 | mb == 0   = cs1
+                       | otherwise = addClause u mb cs1
                    (_,as') : asUndo' = dropWhile ((> d') . fst) asUndo
                in search vs d' asUndo' cs2 as' [u]
 
@@ -268,19 +269,28 @@ setLitTrue l reason ws as = (ws', as', unit)
 
 data LearnedClause =
     LearnedFalse
-  | Learned Int (Lit,Clause) (Maybe Lit)
+  | Learned Int (Lit,Clause) MaybeLit
+
+data Undo = Undo Int MaybeLit Int MaybeLit
+
+emptyUndo = Undo 0 0 0 0
+addUndo n l (Undo big bL small sL)
+  | n > big   = Undo n l big bL
+  | n > small = Undo big bL n l
+  | otherwise = Undo big bL small sL
+
 
 {- | Given an assignment and a conflict clause, compute how far to undo,
      and a new learned clause. -}
 analyzeConflict :: Assignment -> Clause -> LearnedClause
 analyzeConflict as c =
-  go IntSet.empty (IntMap.empty, claFalse) (clauseVars c)
+  go IntSet.empty emptyUndo claFalse (clauseVars c)
   where
-  go done result@(undo,learn) todo =
+  go done undo learn todo =
     case IntSet.minView todo of
-      Nothing -> learnedClause result
+      Nothing -> learnedClause undo learn
       Just (v, todo')
-        | v `IntSet.member` done -> go done result todo'
+        | v `IntSet.member` done -> go done undo learn todo'
         | otherwise ->
           case IntMap.lookup v as of
 
@@ -298,23 +308,19 @@ analyzeConflict as c =
                                                           v (posLits learn) })
 
                   in go (IntSet.insert v done)
-                        (IntMap.insert n l undo, learn')
+                        (addUndo n l undo) learn'
                         todo'
 
                 ImpliedBy c' ->
-                  go (IntSet.insert v done) result
+                  go (IntSet.insert v done) undo learn
                      (IntSet.union (clauseVars c') todo')
 
             Nothing ->
               error ("[analyzeConflict] missing binding for " ++ show v)
 
 -- | Package up the result of conflict analysis.
-learnedClause :: (IntMap {-decision level-} Lit, Clause) -> LearnedClause
-learnedClause (m0, c) =
-  case IntMap.maxViewWithKey m0 of
-    Nothing               -> LearnedFalse
-    Just ((_,l1),m1)      ->
-      case IntMap.maxViewWithKey m1 of
-        Nothing          -> Learned 0  (l1,c) Nothing
-        Just ((k2,l2),_) -> Learned k2 (l1,c) (Just l2)
+learnedClause :: Undo -> Clause -> LearnedClause
+learnedClause (Undo big bL small sL) c
+  | big == 0    = LearnedFalse
+  | otherwise   = Learned small (bL,c) sL
 
