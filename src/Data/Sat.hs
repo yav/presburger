@@ -1,42 +1,15 @@
--- module Data.Sat (checkSat) where
 {-# LANGUAGE BangPatterns #-}
+module Data.Sat (Lit, checkSat) where
 
-import Debug.Trace
+-- import Debug.Trace
 
 import           Data.IntMap ( IntMap )
 import qualified Data.IntMap as IntMap
 import           Data.IntSet ( IntSet )
 import qualified Data.IntSet as IntSet
-import           Data.List ( partition, find, nub, sort )
-import           Data.Array.Unboxed (UArray)
-import qualified Data.Array.Unboxed as Arr
-import qualified Data.Array.Base as Arr
-
-import System.Environment
-
-main :: IO ()
-main = mapM_ testFile =<< getArgs
-
-testFile file =
-  do putStr (show file ++ " ")
-     txt <- readFile file
-     let lss = dimacs txt
-     case checkSat lss of
-       Nothing -> putStrLn "unsat"
-       Just m | Just bad <- find (unsatClause m) lss
-                        -> error $ unlines [ "BUG", show m, show bad ]
-              | otherwise -> putStrLn "sat"
-  where
-  val m x = if x > 0 then m IntMap.! x else not (m IntMap.! negate x)
-  unsatClause m = all (not . val m)
-
-dimacs :: String -> [[Lit]]
-dimacs = map (map read . init) . filter (not . skip) . map words . fst . break (=="%") . lines
-  where
-  skip [] = True
-  skip ("c" : _) = True
-  skip ("p" : _) = True
-  skip _  = False
+import           Data.List ( partition, sort )
+import           Data.Vector.Unboxed ( Vector )
+import qualified Data.Vector.Unboxed as V
 
 checkSat :: [[Lit]] -> Maybe (IntMap{-Var-} Bool)
 checkSat lss =
@@ -50,14 +23,14 @@ checkSat lss =
                   FalseClause      -> Nothing
                   TrivialClause    -> mb
                   UnitClause u     -> Just (cs, u:us)
-                  NormalClause x y -> Just (addClause x y cs, us)
+                  NormalClause a b c' -> Just (addClause a b c' cs, us)
 
 
 data Cla = MalformedClause
          | FalseClause
          | TrivialClause
          | UnitClause (Lit,Clause)
-         | NormalClause (Lit,Clause) Lit
+         | NormalClause Lit Lit Clause
            deriving Show
 
 clause :: [Lit] -> Cla
@@ -67,12 +40,12 @@ clause ls
   | otherwise = case els of
                   [] -> FalseClause
                   [a] -> UnitClause (a,c)
-                  a : b : _ -> NormalClause (a,c) b
+                  a : b : _ -> NormalClause a b c
   where
   (bad,good') = partition (== 0) ls
   good        = IntSet.fromList good'
   els         = IntSet.toList good
-  c           = Arr.listArray (0, IntSet.size good - 1) els
+  c           = V.fromList els
 
 
 
@@ -90,25 +63,15 @@ type MaybeLit = Int   -- ^ Use 0 for 'Nothing'
 
 -- | A set of literals.
 -- Invariant: a variable may appear only once.
-type Clause = UArray Int Lit
+type Clause = Vector Lit
 
-showClause :: Clause -> String
-showClause c = unwords $ map show (sort (Arr.elems c) ++ [0])
+_showClause :: Clause -> String
+_showClause c = unwords $ map show (sort (V.toList c) ++ [0])
 
-clauseLits :: Clause -> [Lit]
-clauseLits c = Arr.elems c
-
-{-# INLINE clauseFromIntSet #-}
-clauseFromIntSet :: IntSet{-Lit-} -> Clause
-clauseFromIntSet x = Arr.listArray (0, IntSet.size x - 1) (IntSet.toList x)
-
-{-# INLINE findInClause #-}
 findInClause :: (Lit -> Bool) -> Clause -> MaybeLit
-findInClause p c = go 0
-  where
-  go i | i < Arr.numElements c = let v = Arr.unsafeAt c i
-                                 in if p v then v else go (i+1)
-       | otherwise = 0
+findInClause p = V.foldr check 0
+  where check a x = if p a then a else x
+
 
 
 --------------------------------------------------------------------------------
@@ -129,9 +92,8 @@ noClauses = Clauses { clauses = IntMap.empty
                     }
 
 -- | Add a cluase to the colleciton.
-{-# INLINE addClause #-}
-addClause :: (Lit,Clause) -> Lit -> Clauses -> Clauses
-addClause (a,c) b ws =
+addClause :: Lit -> Lit -> Clause -> Clauses -> Clauses
+addClause a b c ws =
   Clauses { clauses = add a (add b (clauses ws))
           , watched = IntMap.insert cid (a,b) (watched ws)
           , nextId  = 1 + cid
@@ -142,7 +104,6 @@ addClause (a,c) b ws =
 
 
 -- | Reorganize the clauses, knowing that a literal became false.
-{-# INLINE setLitFalse #-}
 setLitFalse ::
   Assignment      ->
   Lit             ->    -- This literal became false.
@@ -188,15 +149,14 @@ data Reason       = ImpliedBy    !Clause
 
 type Assignment   = IntMap {-Var-} (Reason, Bool)
 
-{-# INLINE litVal #-}
 litVal :: Lit -> Assignment -> Maybe Bool
 litVal l as
   | l > 0     = fmap snd         (IntMap.lookup l as)
   | otherwise = fmap (not . snd) (IntMap.lookup (negate l) as)
 
-showAssign :: Assignment -> String
-showAssign as =
-              show [ if b then x else negate x | (x,(_,b)) <- IntMap.toList as ]
+_showAssign :: Assignment -> String
+_showAssign as =
+  show [ if b then x else negate x | (x,(_,b)) <- IntMap.toList as ]
 
 
 pickVar :: IntSet{-Var-} -> IntMap{-Var-} a -> Maybe Var
@@ -218,46 +178,46 @@ guess vs d asUndo cs as =
 search :: IntSet{-Var-} -> Int -> [(Int,Assignment)] -> Clauses ->
                 Assignment -> [(Lit,Clause)] -> Maybe (IntMap{-Var-} Bool)
 search vs !d asUndo !cs !as us =
-  propagate cs as us $ \cs1 as1 mbConf ->
+  case propagate cs as us of
+    (cs1,as1,mbConf) ->
        case mbConf of
          Nothing -> guess vs d asUndo cs1 as1
          Just c  ->
            case analyzeConflict as1 c of
              LearnedFalse    -> Nothing
-             Learned d' u mb ->
+             Learned d' l mb c' ->
                let cs2 | mb == 0   = cs1
-                       | otherwise = addClause u mb cs1
+                       | otherwise = addClause l mb c' cs1
                    (_,as') : asUndo' = dropWhile ((> d') . fst) asUndo
-               in search vs d' asUndo' cs2 as' [u]
+               in search vs d' asUndo' cs2 as' [(l,c')]
 
 
 --------------------------------------------------------------------------------
 
 -- | Propagate some unit clauses.
 --   Returns a new state, and an optional conflict.
--- propagate :: Clauses -> Assignment -> [(Lit,Clause)] ->
---              (Clauses, Assignment, Maybe Clause)
-propagate ws as todo k =
+propagate :: Clauses -> Assignment -> [(Lit,Clause)] ->
+            (Clauses, Assignment, Maybe Clause)
+propagate ws as todo =
   case todo of
-    []            -> k ws as Nothing
+    []            -> (ws,as,Nothing)
     (l, c) : more ->
       case IntMap.lookup (abs l) as of
 
         Just (_,True)
-          | l > 0     -> propagate ws as more k
-          | otherwise -> k ws as (Just c)
+          | l > 0     -> propagate ws as more
+          | otherwise -> (ws,as,Just c)
 
         Just (_,False)
-          | l < 0     -> propagate ws as more k
-          | otherwise -> k ws as (Just c)
+          | l < 0     -> propagate ws as more
+          | otherwise -> (ws,as,Just c)
 
         Nothing ->
           case setLitTrue l (ImpliedBy c) ws as of
-            (ws', as', new) -> propagate ws' as' (new ++ more) k
+            (ws', as', new) -> propagate ws' as' (new ++ more)
 
 
 
-{-# INLINE setLitTrue #-}
 {- | Set the literal to true, with the given justification.
       * PRE: the varialbe of the literal is not assigned.
       * This just sets the variable and updates the watchers.
@@ -277,64 +237,51 @@ setLitTrue l reason ws as = (ws', as', unit)
 
 data LearnedClause =
     LearnedFalse
-  | Learned Int (Lit,Clause) MaybeLit
-
-data Undo = Undo Int MaybeLit Int MaybeLit
-
-emptyUndo :: Undo
-emptyUndo = Undo 0 0 0 0
-
-{-# INLINE addUndo #-}
-addUndo :: Int -> Lit -> Undo -> Undo
-addUndo n l (Undo big bL small sL)
-  | n > big   = Undo n l big bL
-  | n > small = Undo big bL n l
-  | otherwise = Undo big bL small sL
+  | Learned !Int !Lit !MaybeLit !Clause
 
 
-{- | Given an assignment and a conflict clause, compute how far to undo,
+{- | Given an assignment and a conflict clause, compute how far to learn,
      and a new learned clause. -}
-{-# INLINE analyzeConflict #-}
 analyzeConflict :: Assignment -> Clause -> LearnedClause
-analyzeConflict as c =
-  go IntSet.empty emptyUndo IntSet.empty 0 c []
+analyzeConflict as c0 = go IntSet.empty IntMap.empty [c0]
   where
 
-  go :: IntSet -> Undo -> IntSet -> Int -> Clause -> [Clause] -> LearnedClause
-  go done undo learn n c more
-    | n < Arr.numElements c =
-    let l' = Arr.unsafeAt c n
-        v = abs l'
-    in if v `IntSet.member` done
-          then go done undo learn (n+1) c more
-          else case IntMap.lookup v as of
+  go _    learn []       = learnedClause learn
+  go done learn (c : cs) =
+    case V.foldl' goL (done,learn,cs) c of
+      (done',learn',todo') -> go done' learn' todo'
 
-                 Just (reason, _) ->
-                   case reason of
+  goL s@(done,learn,todo) l
+    | v `IntSet.member` done = s
+    | otherwise =
+      done' `seq`
+      case IntMap.lookup v as of
+        Just (reason, _) ->
+          case reason of
 
-                     GuessAtLevel n' ->
-                       go (IntSet.insert v done)
-                          (addUndo n' l' undo)
-                          (IntSet.insert l' learn)
-                          (n+1) c more
+            GuessAtLevel d ->
+              let learn' = IntMap.insert d l learn
+              in learn' `seq` (done', learn', todo)
 
-                     ImpliedBy c' ->
-                       go (IntSet.insert v done) undo learn
-                          (n+1) c (c' : more)
+            ImpliedBy c' -> (done', learn, c' : todo)
 
-                 Nothing ->
-                   error ("[analyzeConflict] missing binding for " ++ show v)
+        Nothing -> error ("[analyzeConflict] missing binding for " ++ show v)
+    where
+    v     = abs l
+    done' = IntSet.insert v done
 
-  go _    undo learn _ _ []       = learnedClause undo learn
-  go done undo learn n _ (c : cs) = go done undo learn 0 c cs
 
 -- | Package up the result of conflict analysis.
-{-# INLINE learnedClause #-}
-learnedClause :: Undo -> IntSet{-Lit-} -> LearnedClause
-learnedClause (Undo big bL small sL) c
-  | big == 0    = LearnedFalse
-  | otherwise   = let c' = clauseFromIntSet c
-                  in seq c' (Learned small (bL, c') sL)
+learnedClause :: IntMap{-Decision-} Lit -> LearnedClause
+learnedClause learn =
+  case IntMap.toDescList learn of
+    [] -> LearnedFalse
+    ls ->
+      let c = V.fromList (map snd ls)
+      in case ls of
+           [ (_,l) ]           -> Learned 0 l  0  c
+           (_,l1) : (d,l2) : _ -> Learned d l1 l2 c
+
 
 
 
