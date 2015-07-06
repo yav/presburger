@@ -1,10 +1,10 @@
-{-# LANGUAGE BangPatterns #-}
 module Data.Sat (Lit, checkSat) where
 
 -- import Debug.Trace
 
 import           Data.IntMap ( IntMap )
 import qualified Data.IntMap as IntMap
+import qualified Data.IntMap.Strict as StrictIntMap
 import           Data.IntSet ( IntSet )
 import qualified Data.IntSet as IntSet
 import           Data.List ( partition, sort )
@@ -14,7 +14,7 @@ import qualified Data.Vector.Unboxed as V
 checkSat :: [[Lit]] -> Maybe (IntMap{-Var-} Bool)
 checkSat lss =
   do (cs,us) <- foldr add (Just (noClauses,[])) lss
-     search vs 0 [] cs IntMap.empty us
+     search vs 0 IntMap.empty cs IntMap.empty us
   where
   vs       = IntSet.fromList [ abs l | ls <- lss, l <- ls ]
   add c mb = do (cs,us) <- mb
@@ -36,6 +36,7 @@ data Cla = MalformedClause
 clause :: [Lit] -> Cla
 clause ls
   | not (null bad) = MalformedClause
+  -- XXX:
   -- | not (IntSet.null (IntSet.intersection posL negL)) = TrivialClause
   | otherwise = case els of
                   [] -> FalseClause
@@ -79,14 +80,14 @@ findInClause p = V.foldr check 0
 type ClauseId   = Int
 
 data Clauses = Clauses
-  { clauses :: !(IntMap {- Lit -}        [(ClauseId,Clause)])
+  { clauses :: !(StrictIntMap.IntMap {- Lit -}        [(ClauseId,Clause)])
   , watched :: !(IntMap {- ClauseId -}   (Lit,Lit))
   , nextId  :: !ClauseId
   } deriving Show
 
 -- | An empty collection of clauses.
 noClauses :: Clauses
-noClauses = Clauses { clauses = IntMap.empty
+noClauses = Clauses { clauses = StrictIntMap.empty
                     , watched = IntMap.empty
                     , nextId  = 0
                     }
@@ -99,7 +100,7 @@ addClause a b c ws =
           , nextId  = 1 + cid
           }
   where
-  add k m = IntMap.insertWith (++) k [(cid,c)] m
+  add k m = StrictIntMap.insertWith (++) k [(cid,c)] m
   cid     = nextId ws
 
 
@@ -112,27 +113,28 @@ setLitFalse ::
     , Clauses           -- Rearranged collection of clauses.
     )
 setLitFalse as l ws =
-  case IntMap.updateLookupWithKey (\_ _ -> Nothing) l (clauses ws) of
+  case StrictIntMap.updateLookupWithKey (\_ _ -> Nothing) l (clauses ws) of
     (Nothing, _)  -> ([], ws)
     (Just cs, mp) -> go [] [] mp (watched ws) cs
 
   where
-  go unitRes u !cs !ps [] =
-    let ws' = ws { clauses = IntMap.insert l u cs, watched = ps }
-    in seq ws' (unitRes, ws')
+  go unitRes u cs ps [] =
+    let ws' = ws { clauses = StrictIntMap.insert l u cs, watched = ps }
+    in ws' `seq` (unitRes, ws')
 
   go unitRes u cs ps ((cid,c) : more) =
     case newLoc cid c of
-      (!o,l')
+      (o,l')
         | l' == 0   -> go ((o,c) : unitRes) ((cid,c) : u) cs ps more
-        | otherwise -> go unitRes u (IntMap.insertWith (++) l' [(cid,c)] cs)
-                                    (IntMap.insert cid (o,l') ps)
-                                    more
+        | otherwise ->
+          let cs' = StrictIntMap.insertWith (++) l' [(cid,c)] cs
+              ps' = IntMap.insert cid (o,l') ps
+          in cs' `seq` ps' `seq` go unitRes u cs' ps' more
 
   newLoc cid c =
     let o       = other cid
         avoid x = x == o || x == l || litVal x as == Just False
-    in (o,findInClause (not . avoid) c)
+    in o `seq` (o, findInClause (not . avoid) c)
 
   other cid = case IntMap.lookup cid (watched ws) of
                 Just (a,b) -> if a == l then b else a
@@ -143,8 +145,8 @@ setLitFalse as l ws =
 
 --------------------------------------------------------------------------------
 
-data Reason       = ImpliedBy    !Clause
-                  | GuessAtLevel !Int
+data Reason       = ImpliedBy    Clause
+                  | GuessAtLevel Int
                     deriving Show
 
 type Assignment   = IntMap {-Var-} (Reason, Bool)
@@ -164,7 +166,7 @@ pickVar vs as =
   do (a,_) <- IntSet.minView (vs `IntSet.difference` IntMap.keysSet as)
      return a
 
-guess :: IntSet{-Var-} -> Int -> [(Int,Assignment)] -> Clauses ->
+guess :: IntSet{-Var-} -> Int -> IntMap Assignment -> Clauses ->
                                       Assignment -> Maybe (IntMap{-Var-} Bool)
 guess vs d asUndo cs as =
   case pickVar vs as of
@@ -172,24 +174,29 @@ guess vs d asUndo cs as =
     Just v  ->
       let d'               = d + 1
           (cs1,as1,units)  = setLitTrue v (GuessAtLevel d') cs as
-      in search vs d' ((d,as) : asUndo) cs1 as1 units
+          asUndo'          = IntMap.insert d as asUndo
+      in d' `seq` asUndo `seq`
+         search vs d' asUndo' cs1 as1 units
 
 
-search :: IntSet{-Var-} -> Int -> [(Int,Assignment)] -> Clauses ->
+search :: IntSet{-Var-} -> Int -> IntMap Assignment -> Clauses ->
                 Assignment -> [(Lit,Clause)] -> Maybe (IntMap{-Var-} Bool)
-search vs !d asUndo !cs !as us =
+search vs d asUndo cs as us =
   case propagate cs as us of
     (cs1,as1,mbConf) ->
        case mbConf of
          Nothing -> guess vs d asUndo cs1 as1
          Just c  ->
            case analyzeConflict as1 c of
-             LearnedFalse    -> Nothing
+             LearnedFalse  -> Nothing
              Learned d' l mb c' ->
                let cs2 | mb == 0   = cs1
                        | otherwise = addClause l mb c' cs1
-                   (_,as') : asUndo' = dropWhile ((> d') . fst) asUndo
-               in search vs d' asUndo' cs2 as' [(l,c')]
+               in cs2 `seq`
+                  case IntMap.splitLookup d' asUndo of
+                    (asUndo',Just as',_) ->
+                      search vs d' asUndo' cs2 as' [(l,c')]
+                    _ -> error "[search] Undo to unknown decision level."
 
 
 --------------------------------------------------------------------------------
@@ -231,7 +238,8 @@ setLitTrue :: Lit -> Reason -> Clauses -> Assignment ->
 setLitTrue l reason ws as = (ws', as', unit)
   where
   (unit, ws')   = setLitFalse as' (negate l) ws
-  as'           = IntMap.insert (abs l) (reason, l > 0) as
+  as'           = v `seq` IntMap.insert (abs l) (reason, v) as
+  v             = l > 0
 
 --------------------------------------------------------------------------------
 
