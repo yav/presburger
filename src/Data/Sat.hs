@@ -80,14 +80,14 @@ findInClause p = V.foldr check 0
 type ClauseId   = Int
 
 data Clauses = Clauses
-  { clauses :: !(StrictIntMap.IntMap {- Lit -}        [(ClauseId,Clause)])
+  { clauses :: !(IntMap {- Lit -}        [(ClauseId,Clause)])
   , watched :: !(IntMap {- ClauseId -}   (Lit,Lit))
   , nextId  :: !ClauseId
   } deriving Show
 
 -- | An empty collection of clauses.
 noClauses :: Clauses
-noClauses = Clauses { clauses = StrictIntMap.empty
+noClauses = Clauses { clauses = IntMap.empty
                     , watched = IntMap.empty
                     , nextId  = 0
                     }
@@ -105,6 +105,7 @@ addClause a b c ws =
 
 
 -- | Reorganize the clauses, knowing that a literal became false.
+{-# INLINE setLitFalse #-}
 setLitFalse ::
   Assignment      ->
   Lit             ->    -- This literal became false.
@@ -113,13 +114,13 @@ setLitFalse ::
     , Clauses           -- Rearranged collection of clauses.
     )
 setLitFalse as l ws =
-  case StrictIntMap.updateLookupWithKey (\_ _ -> Nothing) l (clauses ws) of
+  case IntMap.updateLookupWithKey (\_ _ -> Nothing) l (clauses ws) of
     (Nothing, _)  -> ([], ws)
     (Just cs, mp) -> go [] [] mp (watched ws) cs
 
   where
   go unitRes u cs ps [] =
-    let ws' = ws { clauses = StrictIntMap.insert l u cs, watched = ps }
+    let ws' = ws { clauses = IntMap.insert l u cs, watched = ps }
     in ws' `seq` (unitRes, ws')
 
   go unitRes u cs ps ((cid,c) : more) =
