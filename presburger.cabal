@@ -1,6 +1,6 @@
 Name:           presburger
 Version:        1.3.1
-License:        BSD3
+License:        MIT
 License-file:   LICENSE
 Author:         Iavor S. Diatchki
 Homepage:       http://github.com/yav/presburger
