@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, PatternGuards, Trustworthy #-}
+{-# LANGUAGE BangPatterns, PatternGuards, Trustworthy, CPP #-}
 {-|
 This module implements a decision procedure for quantifier-free linear
 arithmetic.  The algorithm is based on the following paper:
@@ -48,6 +48,9 @@ import           Control.Monad       (MonadPlus (..), ap, guard, liftM)
 import           Data.List           (partition)
 import           Data.Map            (Map)
 import qualified Data.Map            as Map
+#if MIN_VERSION_containers(0,6,0)
+import qualified Data.Map.Strict     as MapStrict
+#endif
 import           Data.Maybe          (fromMaybe, mapMaybe, maybeToList)
 import           Prelude             hiding ((<>))
 import           Text.PrettyPrint
@@ -955,7 +958,11 @@ tFactor (T c m) =
 
 -- | Extract a variable with a coefficient whose absolute value is minimal.
 tLeastAbsCoeff :: Term -> Maybe (Integer, Name, Term)
+#if MIN_VERSION_containers(0,6,0)
+tLeastAbsCoeff (T c m) = do (xc,x,m1) <- MapStrict.foldrWithKey step Nothing m
+#else
 tLeastAbsCoeff (T c m) = do (xc,x,m1) <- Map.foldWithKey step Nothing m
+#endif
                             return (xc, x, T c m1)
   where
   step x xc Nothing   = Just (xc, x, Map.delete x m)
