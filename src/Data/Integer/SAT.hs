@@ -709,10 +709,12 @@ toList a = go a []
 
 instance Monad Answer where
   return a           = One a
-  fail _             = None
   None >>= _         = None
   One a >>= k        = k a
   Choice m1 m2 >>= k = mplus (m1 >>= k) (m2 >>= k)
+
+instance MonadFail Answer where
+  fail _             = None
 
 instance Alternative Answer where
   empty = mzero
