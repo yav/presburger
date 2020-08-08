@@ -10,15 +10,20 @@ Synopsis:       A decision procedure for quantifier-free linear arithmetic.
 Description:    The decision procedure is based on the algorithm used in
                 CVC4, which is itself based on the Omega test.
 Build-type:     Simple
-Cabal-version:  >= 1.8
+Cabal-version:  >= 1.10
 
 library
+  Default-Language: Haskell2010
   Build-Depends:  base < 10, containers, pretty
   hs-source-dirs: src
   Exposed-modules:
     Data.Integer.SAT
 
   GHC-options:    -O2 -Wall
+  Other-Extensions: Trustworthy
+
+  if !impl(ghc >=8.0)
+    Build-Depends: fail ==4.9.0.0
 
 source-repository head
   type: git
