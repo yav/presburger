@@ -52,8 +52,15 @@ import qualified Data.Map            as Map
 import qualified Data.Map.Strict     as MapStrict
 #endif
 import           Data.Maybe          (fromMaybe, mapMaybe, maybeToList)
-import           Prelude             hiding ((<>))
 import           Text.PrettyPrint
+
+#if MIN_VERSION_base(4,9,0)
+import           Prelude hiding ((<>))
+#else
+import           Prelude
+#endif
+
+import qualified Control.Monad.Fail as Fail
 
 infixr 2 :||
 infixr 3 :&&
@@ -713,7 +720,11 @@ instance Monad Answer where
   One a >>= k        = k a
   Choice m1 m2 >>= k = mplus (m1 >>= k) (m2 >>= k)
 
-instance MonadFail Answer where
+#if !(MIN_VERSION_base(4,13,0))
+  fail = Fail.fail
+#endif
+
+instance Fail.MonadFail Answer where
   fail _             = None
 
 instance Alternative Answer where
