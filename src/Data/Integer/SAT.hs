@@ -16,6 +16,7 @@ module Data.Integer.SAT
   , Prop(..)
   , Expr(..)
   , BoundType(..)
+  , Solutions
   , getExprBound
   , getExprRange
   , Name
@@ -30,6 +31,7 @@ module Data.Integer.SAT
 
 
   -- * Debug
+  , Inerts
   , dotPropSet
   , sizePropSet
   , allInerts
@@ -38,6 +40,7 @@ module Data.Integer.SAT
   -- * For QuickCheck
   , iPickBounded
   , Bound(..)
+  , Term
   , tConst
   ) where
 
